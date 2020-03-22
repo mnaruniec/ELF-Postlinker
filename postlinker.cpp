@@ -204,13 +204,17 @@ unsigned long get_lowest_free_address(const std::vector<Elf64_Phdr> &program_hea
     return result;
 }
 
-unsigned long align_to(unsigned long offset, unsigned long alignment) {
-    if (offset % alignment) {
-        offset /= alignment;
-        offset += alignment;
+inline unsigned long align_to(unsigned long to_be_aligned, unsigned long alignment) {
+    if (!alignment) {
+        return to_be_aligned;
     }
 
-    return offset;
+    if (to_be_aligned % alignment) {
+        to_be_aligned /= alignment;
+        to_be_aligned += alignment;
+    }
+
+    return to_be_aligned;
 }
 
 void DEBUG_print_section_partition(const std::vector<int> section_partition[]) {
@@ -240,6 +244,7 @@ void initialize_new_program_header(Elf64_Phdr &header, unsigned flags) {
 void allocate_segments_no_offset(
         std::map<int, Elf64_Phdr> &new_program_headers,
         std::unordered_map<int, unsigned long> &section_addresses,
+        std::unordered_map<int, unsigned long> &file_section_relative_offsets,
         unsigned long next_free_address,
         const std::vector<int> section_partition[],
         const std::vector<Elf64_Shdr> &section_headers
@@ -275,6 +280,7 @@ void allocate_segments_no_offset(
 
             if (!is_nobits) {
                 new_program_header.p_filesz += section_size;
+                file_section_relative_offsets[section_index] = section_address - new_program_header.p_vaddr;
             }
             new_program_header.p_memsz += section_size;
 
@@ -285,10 +291,70 @@ void allocate_segments_no_offset(
     }
 }
 
+
+// TODO possibly handle all overflows
+inline unsigned long align_same_as(unsigned long to_be_aligned, const unsigned long objective, unsigned long alignment) {
+    if (!alignment) {
+        return to_be_aligned;
+    }
+
+    unsigned long objective_mod = objective % alignment;
+
+    if (to_be_aligned % alignment <= objective_mod) {
+        return to_be_aligned / alignment + objective_mod;
+    }
+
+    return align_to(to_be_aligned, alignment) + objective_mod;
+}
+
+unsigned long allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset) {
+    for (auto &header_entry: program_headers) {
+        next_free_offset = align_same_as(next_free_offset, header_entry.second.p_vaddr, header_entry.second.p_align);
+
+        header_entry.second.p_offset = next_free_offset;
+
+        next_free_offset += header_entry.second.p_filesz;
+    }
+
+    return next_free_offset;
+}
+
+int allocate_program_headers_offset(
+        Elf64_Ehdr &new_elf_header,
+        Elf64_Phdr &first_header,
+        unsigned long new_headers_count,
+        unsigned long first_free_offset
+        ) {
+    unsigned long new_headers_size = new_elf_header.e_phentsize * new_headers_count;
+
+    if (first_header.p_type == PT_PHDR) {
+        if (first_header.p_vaddr <= new_headers_size) {
+            printf("Not enough memory under first segment to add new headers.\n");
+            return -1;
+        }
+
+        first_header.p_vaddr -= new_headers_size;
+        first_header.p_paddr = first_header.p_vaddr;
+
+        first_header.p_filesz += new_headers_size;
+        first_header.p_memsz = first_header.p_filesz;
+
+        first_free_offset = align_same_as(first_free_offset, first_header.p_vaddr, first_header.p_align);
+
+        first_header.p_offset = first_free_offset;
+    }
+
+    new_elf_header.e_phnum += new_headers_count;
+    new_elf_header.e_phoff = first_free_offset;
+
+    return 0;
+}
+
 int postlink(int exec, int rel, char *output_path) {
     // TODO - validation
     Elf64_Ehdr exec_hdr;
     Elf64_Ehdr rel_hdr;
+    Elf64_Ehdr new_elf_header;
 
     std::vector<Elf64_Shdr> exec_section_headers;
     std::vector<Elf64_Shdr> rel_section_headers;
@@ -297,11 +363,15 @@ int postlink(int exec, int rel, char *output_path) {
 
     std::vector<int> section_partition[SEGMENT_KIND_COUNT];
 
+    Elf64_Phdr new_first_program_header;
     std::map<int, Elf64_Phdr> new_program_headers;
     std::unordered_map<int, unsigned long> new_section_addresses;
+    std::unordered_map<int, unsigned long> new_file_section_relative_offsets;
 
-    unsigned long lowest_free_address = 0;
-    unsigned long lowest_free_offset = 0;
+    unsigned long lowest_free_address;
+    unsigned long lowest_free_offset;
+    unsigned long new_program_headers_count;
+    long new_program_headers_offset;
 
     if (pread_full(exec, (char *)&exec_hdr, sizeof(exec_hdr), 0)
         || pread_full(rel, (char *)&rel_hdr, sizeof(rel_hdr), 0)
@@ -318,10 +388,23 @@ int postlink(int exec, int rel, char *output_path) {
     allocate_segments_no_offset(
             new_program_headers,
             new_section_addresses,
+            new_file_section_relative_offsets,
             lowest_free_address,
             section_partition,
             rel_section_headers
     );
+
+    lowest_free_offset = get_lowest_free_offset(exec_hdr, exec_section_headers, exec_program_headers);
+
+    lowest_free_offset = allocate_segment_offsets(new_program_headers, lowest_free_offset);
+
+    new_program_headers_count = new_program_headers.size();
+
+    if (allocate_program_headers_offset(
+            new_elf_header, new_first_program_header, new_program_headers_count, lowest_free_offset
+            )) {
+        return -1;
+    }
 
     return 0;
 }
@@ -359,5 +442,6 @@ int main(int argc, char **argv) {
             exit_code = -1;
         };
     fail_no_close:
+        printf(exit_code ? "An error occured." : "Postlinking successful.");
         return exit_code;
 }
