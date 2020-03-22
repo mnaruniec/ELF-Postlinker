@@ -5,10 +5,16 @@
 #include <fcntl.h>
 #include <vector>
 #include <unistd.h>
+#include <unordered_map>
+#include <map>
 
 #define WRITE_SEGMENT (1 << 0)
 #define EXEC_SEGMENT (1 << 1)
 #define SEGMENT_KIND_COUNT ((EXEC_SEGMENT | WRITE_SEGMENT) + 1)
+
+// TODO
+#define PAGE_SIZE (4 * 1024)
+#define MAX_PAGE_SIZE PAGE_SIZE
 
 int pread_full(int file, char *buf, size_t bytes, off_t offset) {
     int got = 0;
@@ -38,7 +44,7 @@ int pread_full(int file, char *buf, size_t bytes, off_t offset) {
 
 long get_section_count(int file, const Elf64_Ehdr &elf_header) {
     long result = elf_header.e_shnum;
-    if (result == 0) {
+    if (result == SHN_UNDEF) {
         if (elf_header.e_shoff == 0) {
             return 0;
         }
@@ -198,12 +204,84 @@ unsigned long get_lowest_free_address(const std::vector<Elf64_Phdr> &program_hea
     return result;
 }
 
+unsigned long align_to(unsigned long offset, unsigned long alignment) {
+    if (offset % alignment) {
+        offset /= alignment;
+        offset += alignment;
+    }
+
+    return offset;
+}
+
 void DEBUG_print_section_partition(const std::vector<int> section_partition[]) {
     for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
         printf("Segment %u:\n", i);
         for (auto section: section_partition[i]) {
             printf("%d\n", section);
         }
+    }
+}
+
+void initialize_new_program_header(Elf64_Phdr &header, unsigned flags) {
+    header.p_type = PT_LOAD;
+    header.p_offset = header.p_vaddr = header.p_paddr = header.p_filesz = header.p_memsz = 0;
+    // TODO check flags
+    header.p_align = PAGE_SIZE;
+
+    header.p_flags = PF_R;
+    if (flags & WRITE_SEGMENT) {
+        header.p_flags |= PF_W;
+    }
+    if (flags & EXEC_SEGMENT) {
+        header.p_flags |= PF_X;
+    }
+}
+
+void allocate_segments_no_offset(
+        std::map<int, Elf64_Phdr> &new_program_headers,
+        std::unordered_map<int, unsigned long> &section_addresses,
+        unsigned long next_free_address,
+        const std::vector<int> section_partition[],
+        const std::vector<Elf64_Shdr> &section_headers
+        ) {
+    for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
+        if (section_partition[i].empty()) {
+            continue;
+        }
+
+        next_free_address = align_to(next_free_address, MAX_PAGE_SIZE);
+        Elf64_Phdr new_program_header;
+        initialize_new_program_header(new_program_header, i);
+
+        for (unsigned j = 0; j < section_partition[i].size(); ++j) {
+            int section_index = section_partition[i][j];
+            const Elf64_Shdr &section_header = section_headers[section_index];
+
+            unsigned long section_address = align_to(next_free_address, section_header.sh_addralign);
+            unsigned long padding = section_address - next_free_address;
+            unsigned long section_size = section_header.sh_size;
+            bool is_nobits = section_header.sh_type == SHT_NOBITS;
+
+            section_addresses[section_index] = section_address;
+
+            if (j == 0) {
+                new_program_header.p_vaddr = new_program_header.p_paddr = section_address;
+            } else {
+                if (!is_nobits) {
+                    new_program_header.p_filesz += padding;
+                }
+                new_program_header.p_memsz += padding;
+            }
+
+            if (!is_nobits) {
+                new_program_header.p_filesz += section_size;
+            }
+            new_program_header.p_memsz += section_size;
+
+            next_free_address = section_address + section_size;
+        }
+
+        new_program_headers[i] = new_program_header;
     }
 }
 
@@ -218,7 +296,12 @@ int postlink(int exec, int rel, char *output_path) {
     std::vector<Elf64_Phdr> exec_program_headers;
 
     std::vector<int> section_partition[SEGMENT_KIND_COUNT];
-    unsigned new_segment_count = 0;
+
+    std::map<int, Elf64_Phdr> new_program_headers;
+    std::unordered_map<int, unsigned long> new_section_addresses;
+
+    unsigned long lowest_free_address = 0;
+    unsigned long lowest_free_offset = 0;
 
     if (pread_full(exec, (char *)&exec_hdr, sizeof(exec_hdr), 0)
         || pread_full(rel, (char *)&rel_hdr, sizeof(rel_hdr), 0)
@@ -229,13 +312,16 @@ int postlink(int exec, int rel, char *output_path) {
     }
 
     coalesce_sections(section_partition, rel_section_headers);
-    for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
-        if (!section_partition[i].empty()) {
-            ++new_segment_count;
-        }
-    }
 
-    DEBUG_print_section_partition(section_partition);
+    lowest_free_address = get_lowest_free_address(exec_program_headers);
+
+    allocate_segments_no_offset(
+            new_program_headers,
+            new_section_addresses,
+            lowest_free_address,
+            section_partition,
+            rel_section_headers
+    );
 
     return 0;
 }
