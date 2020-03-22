@@ -254,6 +254,7 @@ inline unsigned long align_to(unsigned long to_be_aligned, unsigned long alignme
 
     if (to_be_aligned % alignment) {
         to_be_aligned /= alignment;
+        to_be_aligned *= alignment;
         to_be_aligned += alignment;
     }
 
@@ -344,7 +345,7 @@ inline unsigned long align_same_as(unsigned long to_be_aligned, const unsigned l
     unsigned long objective_mod = objective % alignment;
 
     if (to_be_aligned % alignment <= objective_mod) {
-        return to_be_aligned / alignment + objective_mod;
+        return to_be_aligned / alignment * alignment + objective_mod;
     }
 
     return align_to(to_be_aligned, alignment) + objective_mod;
@@ -530,6 +531,9 @@ int postlink(int exec, int rel, char *output_path) {
     lowest_free_offset = allocate_segment_offsets(new_program_headers, lowest_free_offset);
 
     new_program_headers_count = new_program_headers.size();
+
+    new_elf_header = exec_hdr;
+    new_first_program_header = exec_program_headers[0];
 
     if (allocate_program_headers_offset(
             new_elf_header, new_first_program_header, new_program_headers_count, lowest_free_offset)) {
