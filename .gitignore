@@ -2,5 +2,7 @@
 cmake-build-debug
 *.tgz
 *.tar.gz
-./*.o
+*.o
 postlinker
+a.out
+
