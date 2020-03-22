@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <unordered_map>
 #include <map>
+#include <sys/sendfile.h>
+#include <sys/types.h>
 
 #define WRITE_SEGMENT (1 << 0)
 #define EXEC_SEGMENT (1 << 1)
@@ -19,24 +21,65 @@
 int pread_full(int file, char *buf, size_t bytes, off_t offset) {
     int got = 0;
     while (bytes > 0) {
-        got = pread64(file, buf, bytes, offset);
+        got = pread(file, buf, bytes, offset);
 
         if (got < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            perror("pread64");
+            perror("pread");
             return -1;
         }
 
         if (got == 0) {
-            printf("pread64: Unexpected end of file.");
+            printf("pread: Unexpected end of file.");
             return -1;
         }
 
         buf += got;
         offset += got;
         bytes -= got;
+    }
+
+    return 0;
+}
+
+int pwrite_full(int file, char *buf, size_t bytes, off_t offset) {
+    int wrote = 0;
+    while (bytes > 0) {
+        wrote = pwrite(file, buf, bytes, offset);
+
+        if (wrote < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("pwrite");
+            return -1;
+        }
+
+        buf += wrote;
+        offset += wrote;
+        bytes -= wrote;
+    }
+
+    return 0;
+}
+
+// TODO eintr
+int copy_data(int output, int input, size_t size, off_t output_offset = 0, off_t input_offset = 0) {
+    if (lseek(output, output_offset, SEEK_SET) < 0 || lseek(input, input_offset, SEEK_SET) < 0) {
+        perror("lseek");
+        return -1;
+    }
+
+    ssize_t sent;
+    while (size != 0) {
+        sent = sendfile(output, input, nullptr, size);
+        if (sent < 0) {
+            perror("sendfile(output, input)");
+            return -1;
+        }
+        size -= sent;
     }
 
     return 0;
@@ -350,8 +393,94 @@ int allocate_program_headers_offset(
     return 0;
 }
 
+void build_output_program_headers(
+        std::vector<Elf64_Phdr> &output_program_headers,
+        const Elf64_Phdr &new_first_header,
+        const std::vector<Elf64_Phdr> &orig_program_headers,
+        const std::map<int, Elf64_Phdr> &new_program_headers
+        ) {
+    output_program_headers.push_back(new_first_header);
+
+    output_program_headers.insert(
+            output_program_headers.end(), orig_program_headers.begin() + 1, orig_program_headers.end());
+
+    for (auto &entry: new_program_headers) {
+        output_program_headers.push_back(entry.second);
+    }
+}
+
+void build_absolute_section_offsets(
+        std::unordered_map<int, unsigned long> &absolute_offsets,
+        const std::unordered_map<int, unsigned long> &relative_offsets,
+        const std::vector<int> section_partition[],
+        const std::map<int, Elf64_Phdr> &new_program_headers
+        ) {
+    for (auto &entry: new_program_headers) {
+        unsigned long segment_offset = entry.second.p_offset;
+
+        for (auto section_index: section_partition[entry.first]) {
+            if (relative_offsets.find(section_index) == relative_offsets.end()) {
+                continue;
+            }
+
+            absolute_offsets[section_index] = segment_offset + relative_offsets.at(section_index);
+        }
+    }
+}
+
+int write_program_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Phdr> &program_headers) {
+    unsigned long offset = elf_header.e_phoff;
+    for (auto &header: program_headers) {
+        if (pwrite_full(file, (char *) &header, sizeof(header), offset)) {
+            return -1;
+        }
+
+        offset += elf_header.e_phentsize;
+    }
+
+    return 0;
+}
+
+int copy_sections(int output, int input,
+                  const std::vector<Elf64_Shdr> &input_section_headers,
+                  const std::unordered_map<int, unsigned long> &output_section_absolute_offsets
+                  ) {
+    for (auto &entry: output_section_absolute_offsets) {
+        const Elf64_Shdr &header = input_section_headers[entry.first];
+        if (header.sh_type == SHT_NOBITS) {
+            continue;
+        }
+
+        if (copy_data(output, input, header.sh_size, entry.second, header.sh_offset)) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int write_output_no_relocations(int output, int exec, int rel,
+        const Elf64_Ehdr &new_elf_header,
+        const std::vector<Elf64_Phdr> &output_program_headers,
+        const std::vector<Elf64_Shdr> &rel_section_headers,
+        const std::unordered_map<int, unsigned long> &output_section_absolute_offsets,
+        unsigned long exec_file_size
+        ) {
+    if (copy_data(output, exec, exec_file_size)
+        || pwrite_full(output, (char *) &new_elf_header, sizeof(new_elf_header), 0)
+        || write_program_headers(output, new_elf_header, output_program_headers)
+        || copy_sections(output, rel, rel_section_headers, output_section_absolute_offsets)) {
+        return -1;
+    }
+
+    return 0;
+}
+
 int postlink(int exec, int rel, char *output_path) {
     // TODO - validation
+    int exit_code = -1;
+    int output;
+
     Elf64_Ehdr exec_hdr;
     Elf64_Ehdr rel_hdr;
     Elf64_Ehdr new_elf_header;
@@ -360,25 +489,27 @@ int postlink(int exec, int rel, char *output_path) {
     std::vector<Elf64_Shdr> rel_section_headers;
 
     std::vector<Elf64_Phdr> exec_program_headers;
+    std::vector<Elf64_Phdr> output_program_headers;
+    std::map<int, Elf64_Phdr> new_program_headers;
 
     std::vector<int> section_partition[SEGMENT_KIND_COUNT];
 
     Elf64_Phdr new_first_program_header;
-    std::map<int, Elf64_Phdr> new_program_headers;
     std::unordered_map<int, unsigned long> new_section_addresses;
     std::unordered_map<int, unsigned long> new_file_section_relative_offsets;
+    std::unordered_map<int, unsigned long> new_file_section_absolute_offsets;
 
     unsigned long lowest_free_address;
     unsigned long lowest_free_offset;
     unsigned long new_program_headers_count;
-    long new_program_headers_offset;
+    unsigned long exec_file_size;
 
     if (pread_full(exec, (char *)&exec_hdr, sizeof(exec_hdr), 0)
         || pread_full(rel, (char *)&rel_hdr, sizeof(rel_hdr), 0)
         || get_section_headers(rel_section_headers, rel, rel_hdr)
         || get_section_headers(exec_section_headers, exec, exec_hdr)
         || get_program_headers(exec_program_headers, exec, exec_hdr)) {
-        return -1;
+        goto fail_no_close;
     }
 
     coalesce_sections(section_partition, rel_section_headers);
@@ -394,19 +525,52 @@ int postlink(int exec, int rel, char *output_path) {
             rel_section_headers
     );
 
-    lowest_free_offset = get_lowest_free_offset(exec_hdr, exec_section_headers, exec_program_headers);
+    exec_file_size = lowest_free_offset = get_lowest_free_offset(exec_hdr, exec_section_headers, exec_program_headers);
 
     lowest_free_offset = allocate_segment_offsets(new_program_headers, lowest_free_offset);
 
     new_program_headers_count = new_program_headers.size();
 
     if (allocate_program_headers_offset(
-            new_elf_header, new_first_program_header, new_program_headers_count, lowest_free_offset
-            )) {
-        return -1;
+            new_elf_header, new_first_program_header, new_program_headers_count, lowest_free_offset)) {
+        goto fail_no_close;
     }
 
-    return 0;
+    build_output_program_headers(
+            output_program_headers, new_first_program_header, exec_program_headers, new_program_headers);
+
+    build_absolute_section_offsets(
+            new_file_section_absolute_offsets,
+            new_file_section_relative_offsets,
+            section_partition,
+            new_program_headers
+    );
+
+    output = open(output_path, O_RDWR | O_CREAT | O_TRUNC);
+    if (output < 0) {
+        perror("open(output)");
+        goto fail_no_close;
+    }
+
+    if (write_output_no_relocations(
+            output, exec, rel,
+            new_elf_header,
+            output_program_headers,
+            rel_section_headers,
+            new_file_section_absolute_offsets,
+            exec_file_size)) {
+        goto fail_close;
+    }
+
+    exit_code = 0;
+
+    fail_close:
+        if (close(output) < 0) {
+            perror("close(output)");
+            exit_code = -1;
+        };
+    fail_no_close:
+        return exit_code;
 }
 
 int main(int argc, char **argv) {
@@ -442,6 +606,6 @@ int main(int argc, char **argv) {
             exit_code = -1;
         };
     fail_no_close:
-        printf(exit_code ? "An error occured." : "Postlinking successful.");
+        printf(exit_code ? "An error occured.\n" : "Postlinking successful.\n");
         return exit_code;
 }
