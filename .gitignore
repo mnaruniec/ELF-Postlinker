@@ -5,4 +5,5 @@ cmake-build-debug
 *.o
 postlinker
 a.out
+hshare
 

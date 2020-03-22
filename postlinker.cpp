@@ -198,6 +198,15 @@ unsigned long get_lowest_free_address(const std::vector<Elf64_Phdr> &program_hea
     return result;
 }
 
+void DEBUG_print_section_partition(const std::vector<int> section_partition[]) {
+    for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
+        printf("Segment %u:\n", i);
+        for (auto section: section_partition[i]) {
+            printf("%d\n", section);
+        }
+    }
+}
+
 int postlink(int exec, int rel, char *output_path) {
     // TODO - validation
     Elf64_Ehdr exec_hdr;
@@ -225,6 +234,8 @@ int postlink(int exec, int rel, char *output_path) {
             ++new_segment_count;
         }
     }
+
+    DEBUG_print_section_partition(section_partition);
 
     return 0;
 }
