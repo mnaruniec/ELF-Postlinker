@@ -550,7 +550,7 @@ int postlink(int exec, int rel, char *output_path) {
             new_program_headers
     );
 
-    output = open(output_path, O_RDWR | O_CREAT | O_TRUNC);
+    output = open(output_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IXUSR);
     if (output < 0) {
         perror("open(output)");
         goto fail_no_close;
