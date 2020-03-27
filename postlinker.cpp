@@ -247,6 +247,15 @@ unsigned long get_lowest_free_address(const std::vector<Elf64_Phdr> &program_hea
     return result;
 }
 
+unsigned long get_max_alignment(const std::vector<Elf64_Phdr> &program_headers) {
+    unsigned long result = MAX_PAGE_SIZE;
+    for (auto &header: program_headers) {
+        result = std::max(result, header.p_align);
+    }
+
+    return result;
+}
+
 inline unsigned long align_to(unsigned long to_be_aligned, unsigned long alignment) {
     if (!alignment) {
         return to_be_aligned;
@@ -351,7 +360,7 @@ inline unsigned long align_same_as(unsigned long to_be_aligned, const unsigned l
     return align_to(to_be_aligned, alignment) + objective_mod;
 }
 
-unsigned long allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset) {
+void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset) {
     for (auto &header_entry: program_headers) {
         next_free_offset = align_same_as(next_free_offset, header_entry.second.p_vaddr, header_entry.second.p_align);
 
@@ -359,8 +368,6 @@ unsigned long allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_header
 
         next_free_offset += header_entry.second.p_filesz;
     }
-
-    return next_free_offset;
 }
 
 int allocate_program_headers_offset(
@@ -396,15 +403,8 @@ int allocate_program_headers_offset(
 
 void build_output_program_headers(
         std::vector<Elf64_Phdr> &output_program_headers,
-        const Elf64_Phdr &new_first_header,
-        const std::vector<Elf64_Phdr> &orig_program_headers,
         const std::map<int, Elf64_Phdr> &new_program_headers
         ) {
-    output_program_headers.push_back(new_first_header);
-
-    output_program_headers.insert(
-            output_program_headers.end(), orig_program_headers.begin() + 1, orig_program_headers.end());
-
     for (auto &entry: new_program_headers) {
         output_program_headers.push_back(entry.second);
     }
@@ -427,6 +427,23 @@ void build_absolute_section_offsets(
             absolute_offsets[section_index] = segment_offset + relative_offsets.at(section_index);
         }
     }
+}
+
+int write_elf_header(int file, const Elf64_Ehdr &elf_header) {
+    return pwrite_full(file, (char *) &elf_header, sizeof(elf_header), 0);
+}
+
+int write_section_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Shdr> &section_headers) {
+    unsigned long offset = elf_header.e_shoff;
+    for (auto &header: section_headers) {
+        if (pwrite_full(file, (char *) &header, sizeof(header), offset)) {
+            return -1;
+        }
+
+        offset += elf_header.e_shentsize;
+    }
+
+    return 0;
 }
 
 int write_program_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Phdr> &program_headers) {
@@ -461,17 +478,146 @@ int copy_sections(int output, int input,
 }
 
 int write_output_no_relocations(int output, int exec, int rel,
-        const Elf64_Ehdr &new_elf_header,
+        const Elf64_Ehdr &output_elf_header,
+        const std::vector<Elf64_Shdr> &output_section_headers,
         const std::vector<Elf64_Phdr> &output_program_headers,
         const std::vector<Elf64_Shdr> &rel_section_headers,
         const std::unordered_map<int, unsigned long> &output_section_absolute_offsets,
-        unsigned long exec_file_size
+        unsigned long exec_file_size,
+        unsigned long exec_shift_offset,
+        unsigned long exec_shift_value
         ) {
-    if (copy_data(output, exec, exec_file_size)
-        || pwrite_full(output, (char *) &new_elf_header, sizeof(new_elf_header), 0)
-        || write_program_headers(output, new_elf_header, output_program_headers)
+    unsigned long tail_output_offset = exec_shift_offset + exec_shift_value;
+    unsigned long tail_size = exec_file_size - exec_shift_offset;
+
+    if (copy_data(output, exec, exec_shift_offset)
+        || copy_data(output, exec, tail_size, tail_output_offset, exec_shift_offset)
+        || write_elf_header(output, output_elf_header)
+        || write_section_headers(output, output_elf_header, output_section_headers)
+        || write_program_headers(output, output_elf_header, output_program_headers)
         || copy_sections(output, rel, rel_section_headers, output_section_absolute_offsets)) {
         return -1;
+    }
+
+    return 0;
+}
+
+inline unsigned long get_program_headers_size(const Elf64_Ehdr &elf_header, unsigned long program_header_count) {
+    return elf_header.e_phentsize * program_header_count;
+}
+
+inline unsigned long get_program_headers_end_offset(const Elf64_Ehdr &elf_header, unsigned long program_header_count) {
+    return elf_header.e_phoff + get_program_headers_size(elf_header, program_header_count);
+}
+
+inline unsigned long get_program_headers_end_address(const Elf64_Ehdr &elf_header,
+        const Elf64_Phdr &first_load_header,
+        unsigned long program_header_count
+        ) {
+    return first_load_header.p_vaddr + elf_header.e_phoff + get_program_headers_size(elf_header, program_header_count);
+}
+
+int get_first_load_segment(Elf64_Phdr &load, const std::vector<Elf64_Phdr> &program_headers) {
+    for (auto &header: program_headers) {
+        if (header.p_type == PT_LOAD) {
+            load = header;
+            if (header.p_offset != 0) {
+                printf("First load segment has non-zero offset.\n");
+                return -1;
+            }
+
+            return 0;
+        }
+    }
+
+    printf("No load segment found.\n");
+    return -1;
+}
+
+int shift_section(Elf64_Shdr &header,
+        unsigned long exec_shift_offset, unsigned long exec_shift_address, unsigned long exec_shift_value) {
+    unsigned long end_addr = header.sh_addr + header.sh_size;
+
+    if (header.sh_offset >= exec_shift_offset) {
+        header.sh_offset += exec_shift_value;
+    }
+
+    if (header.sh_addr == 0) {
+        return 0;
+    }
+
+    // TODO think about simplifying
+    if (header.sh_addr < exec_shift_address) {
+        if (exec_shift_value > header.sh_addr) {
+            printf("Not enough memory space under section to shift.\n");
+            return -1;
+        }
+
+        header.sh_addr -= exec_shift_value;
+        if (end_addr > exec_shift_address) {
+            header.sh_size += exec_shift_value;
+        }
+    }
+
+    return 0;
+}
+
+int shift_segment(Elf64_Phdr &header,
+        unsigned long exec_shift_offset, unsigned long exec_shift_address, unsigned long exec_shift_value) {
+    unsigned long end_addr = header.p_vaddr + header.p_memsz;
+    unsigned long end_off = header.p_offset + header.p_filesz;
+
+    if (header.p_offset >= exec_shift_offset) {
+        header.p_offset += exec_shift_value;
+    } else if (end_off > exec_shift_offset) {
+        header.p_filesz += exec_shift_value;
+    }
+
+    if (header.p_vaddr == 0) {
+        return 0;
+    }
+
+    if (header.p_vaddr < exec_shift_address) {
+        if (exec_shift_value > header.p_vaddr) {
+            printf("Not enough memory space under segment to shift.\n");
+            return -1;
+        }
+
+        header.p_vaddr -= exec_shift_value;
+        header.p_paddr = header.p_vaddr;
+        if (end_addr > exec_shift_address) {
+            header.p_memsz += exec_shift_value;
+        }
+    }
+
+    return 0;
+}
+
+int perform_shifts(Elf64_Ehdr &output_elf_header,
+        std::vector<Elf64_Shdr> &output_section_headers,
+        std::vector<Elf64_Phdr> &output_program_headers,
+        unsigned long exec_shift_offset, unsigned long exec_shift_address, unsigned long exec_shift_value
+        ) {
+    if (output_elf_header.e_shoff >= exec_shift_offset) {
+        output_elf_header.e_shoff += exec_shift_value;
+    }
+
+    if (output_elf_header.e_entry < exec_shift_address) {
+        output_elf_header.e_entry -= exec_shift_value;
+    }
+
+    for (auto &header: output_section_headers) {
+        if (shift_section(header, exec_shift_offset, exec_shift_address, exec_shift_value)) {
+            printf("Error when shifting sections.\n");
+            return -1;
+        }
+    }
+
+    for (auto &header: output_program_headers) {
+        if (shift_segment(header, exec_shift_offset, exec_shift_address, exec_shift_value)) {
+            printf("Error when shifting segments.\n");
+            return -1;
+        }
     }
 
     return 0;
@@ -482,20 +628,22 @@ int postlink(int exec, int rel, char *output_path) {
     int exit_code = -1;
     int output;
 
-    Elf64_Ehdr exec_hdr;
-    Elf64_Ehdr rel_hdr;
-    Elf64_Ehdr new_elf_header;
+    Elf64_Ehdr exec_elf_header;
+    Elf64_Ehdr rel_elf_header;
+    Elf64_Ehdr output_elf_header;
 
     std::vector<Elf64_Shdr> exec_section_headers;
     std::vector<Elf64_Shdr> rel_section_headers;
+    std::vector<Elf64_Shdr> output_section_headers;
 
     std::vector<Elf64_Phdr> exec_program_headers;
     std::vector<Elf64_Phdr> output_program_headers;
     std::map<int, Elf64_Phdr> new_program_headers;
 
+    Elf64_Phdr first_load_segment;
+
     std::vector<int> section_partition[SEGMENT_KIND_COUNT];
 
-    Elf64_Phdr new_first_program_header;
     std::unordered_map<int, unsigned long> new_section_addresses;
     std::unordered_map<int, unsigned long> new_file_section_relative_offsets;
     std::unordered_map<int, unsigned long> new_file_section_absolute_offsets;
@@ -504,14 +652,25 @@ int postlink(int exec, int rel, char *output_path) {
     unsigned long lowest_free_offset;
     unsigned long new_program_headers_count;
     unsigned long exec_file_size;
+    unsigned long max_alignment;
 
-    if (pread_full(exec, (char *)&exec_hdr, sizeof(exec_hdr), 0)
-        || pread_full(rel, (char *)&rel_hdr, sizeof(rel_hdr), 0)
-        || get_section_headers(rel_section_headers, rel, rel_hdr)
-        || get_section_headers(exec_section_headers, exec, exec_hdr)
-        || get_program_headers(exec_program_headers, exec, exec_hdr)) {
+    unsigned long exec_shift_offset;
+    unsigned long exec_shift_address;
+    unsigned long exec_shift_value;
+
+    if (pread_full(exec, (char *)&exec_elf_header, sizeof(exec_elf_header), 0)
+        || pread_full(rel, (char *)&rel_elf_header, sizeof(rel_elf_header), 0)
+        || get_section_headers(rel_section_headers, rel, rel_elf_header)
+        || get_section_headers(exec_section_headers, exec, exec_elf_header)
+        || get_program_headers(exec_program_headers, exec, exec_elf_header)
+        || get_first_load_segment(first_load_segment, exec_program_headers)
+    ) {
         goto fail_no_close;
     }
+
+    output_elf_header = exec_elf_header;
+    output_section_headers = std::vector<Elf64_Shdr>(exec_section_headers);
+    output_program_headers = std::vector<Elf64_Phdr>(exec_program_headers);
 
     coalesce_sections(section_partition, rel_section_headers);
 
@@ -526,22 +685,36 @@ int postlink(int exec, int rel, char *output_path) {
             rel_section_headers
     );
 
-    exec_file_size = lowest_free_offset = get_lowest_free_offset(exec_hdr, exec_section_headers, exec_program_headers);
-
-    lowest_free_offset = allocate_segment_offsets(new_program_headers, lowest_free_offset);
-
     new_program_headers_count = new_program_headers.size();
 
-    new_elf_header = exec_hdr;
-    new_first_program_header = exec_program_headers[0];
+    exec_file_size = get_lowest_free_offset(exec_elf_header, exec_section_headers, exec_program_headers);
 
-    if (allocate_program_headers_offset(
-            new_elf_header, new_first_program_header, new_program_headers_count, lowest_free_offset)) {
-        goto fail_no_close;
+    max_alignment = get_max_alignment(exec_program_headers);
+
+    exec_shift_offset = get_program_headers_end_offset(exec_elf_header, exec_program_headers.size());
+    exec_shift_address = get_program_headers_end_address(exec_elf_header, first_load_segment, exec_program_headers.size());
+    exec_shift_value = align_to(
+            get_program_headers_size(exec_elf_header, new_program_headers_count),
+            max_alignment
+    );
+
+    if (perform_shifts(
+            output_elf_header,
+            output_section_headers,
+            output_program_headers,
+            exec_shift_offset,
+            exec_shift_address,
+            exec_shift_value
+    )) {
+        return -1;
     }
 
-    build_output_program_headers(
-            output_program_headers, new_first_program_header, exec_program_headers, new_program_headers);
+    lowest_free_offset = exec_file_size + exec_shift_value;
+
+    allocate_segment_offsets(new_program_headers, lowest_free_offset);
+
+    build_output_program_headers(output_program_headers, new_program_headers);
+    // TODO update segment count
 
     build_absolute_section_offsets(
             new_file_section_absolute_offsets,
@@ -558,11 +731,15 @@ int postlink(int exec, int rel, char *output_path) {
 
     if (write_output_no_relocations(
             output, exec, rel,
-            new_elf_header,
+            output_elf_header,
+            output_section_headers,
             output_program_headers,
             rel_section_headers,
             new_file_section_absolute_offsets,
-            exec_file_size)) {
+            exec_file_size,
+            exec_shift_offset,
+            exec_shift_value
+    )) {
         goto fail_close;
     }
 
