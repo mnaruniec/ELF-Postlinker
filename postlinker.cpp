@@ -18,6 +18,9 @@
 #define PAGE_SIZE (4 * 1024)
 #define MAX_PAGE_SIZE PAGE_SIZE
 
+#define ORIG_START_STRING ("orig_start")
+#define _START_STRING ("_start")
+
 int pread_full(int file, char *buf, size_t bytes, off_t offset) {
     int got = 0;
     while (bytes > 0) {
@@ -471,17 +474,6 @@ inline unsigned long get_program_headers_size(const Elf64_Ehdr &elf_header, unsi
     return elf_header.e_phentsize * program_header_count;
 }
 
-inline unsigned long get_program_headers_end_offset(const Elf64_Ehdr &elf_header, unsigned long program_header_count) {
-    return elf_header.e_phoff + get_program_headers_size(elf_header, program_header_count);
-}
-
-inline unsigned long get_program_headers_end_address(const Elf64_Ehdr &elf_header,
-        const Elf64_Phdr &first_load_header,
-        unsigned long program_header_count
-        ) {
-    return first_load_header.p_vaddr + elf_header.e_phoff + get_program_headers_size(elf_header, program_header_count);
-}
-
 int get_first_load_segment(Elf64_Phdr &load, const std::vector<Elf64_Phdr> &program_headers) {
     for (auto &header: program_headers) {
         if (header.p_type == PT_LOAD) {
@@ -566,26 +558,203 @@ int update_program_header_count(Elf64_Ehdr &elf_header,
     return 0;
 }
 
-//// TODO check sizeofs for buffer overflow
-//int collect_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map,
-//        int file,
-//        const std::vector<Elf64_Shdr> &section_headers
-//        ) {
-//    for (auto &header: section_headers) {
-//        if (header.sh_type != SHT_SYMTAB) {
-//            continue;
-//        }
-//
-//        Elf64_Sym symbol;
-//        for (unsigned off = header.sh_offset; off < header.sh_offset + header.sh_size; off += header.sh_entsize) {
-//            if (pread_full(file, (char *)&symbol, sizeof(symbol), off)) {
-//                return -1;
-//            }
-//
-//            if ()
-//        }
+int read_symbol_table(std::vector<Elf64_Sym> &symbol_table, int file, const Elf64_Shdr &header) {
+    Elf64_Sym symbol;
+
+    for (unsigned off = header.sh_offset; off < header.sh_offset + header.sh_size; off += header.sh_entsize) {
+        if (pread_full(file, (char *) &symbol, sizeof(symbol), off)) {
+            return -1;
+        }
+
+        symbol_table.push_back(symbol);
+    }
+
+    return 0;
+}
+
+int read_string_table(std::vector<char> &string_table, int file, const Elf64_Shdr &header) {
+    if (header.sh_type != SHT_STRTAB) {
+        printf("Non-SHT_STRTAB section used as string table.\n");
+        return -1;
+    }
+
+    string_table.resize(header.sh_size);
+    if (pread_full(file, string_table.data(), header.sh_size, header.sh_offset)) {
+        return -1;
+    }
+
+    if (string_table[header.sh_size - 1] != 0) {
+        printf("SHT_STRTAB section is not null-terminated.\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int read_string_table_for_symbol_table(std::vector<char> &string_table,
+        int file,
+        const std::vector<Elf64_Shdr> &section_headers,
+        const Elf64_Shdr &symbol_header) {
+    if (symbol_header.sh_type != SHT_SYMTAB) {
+        printf("Trying to use non-SHT_SYMTAB section as symbol table..\n");
+        return -1;
+    }
+
+    unsigned string_table_index = symbol_header.sh_link;
+    if (string_table_index >= section_headers.size()) {
+        printf("String table index is out-of-bounds.\n");
+        return -1;
+    }
+    const Elf64_Shdr &string_table_header = section_headers[string_table_index];
+
+    return read_string_table(string_table, file, string_table_header);
+}
+
+// TODO check sizeofs for buffer overflow
+int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map,
+        int file,
+        const std::vector<Elf64_Shdr> &section_headers
+        ) {
+    for (auto &header: section_headers) {
+        if (header.sh_type != SHT_SYMTAB) {
+            continue;
+        }
+
+        std::vector<char> string_table;
+        std::vector<Elf64_Sym> symbol_table;
+
+        if (read_symbol_table(symbol_table, file, header)
+            || read_string_table_for_symbol_table(string_table, file, section_headers, header)) {
+            return -1;
+        }
+
+        for (auto &symbol: symbol_table) {
+            unsigned name_offset = symbol.st_name;
+            if (name_offset >= string_table.size()) {
+                printf("Symbol name index is out-of-bounds.\n");
+                return -1;
+            }
+
+            std::string symbol_name(string_table.data() + name_offset);
+            unsigned long symbol_binding = ELF64_ST_BIND(symbol.st_info);
+
+            // TODO check COMMON
+            if (symbol_binding == STB_GLOBAL && symbol.st_shndx != SHN_UNDEF && symbol.st_shndx != SHN_COMMON) {
+                if (symbol_map.find(symbol_name) != symbol_map.end()) {
+                    printf("Duplicate symbol name\n");
+                    return -1;
+                }
+
+                symbol_map[symbol_name] = symbol;
+            }
+        }
+    }
+
+    // TODO remove
+//    for (auto &entry: symbol_map) {
+//        printf("%s\n", entry.first.c_str());
 //    }
-//}
+
+    return 0;
+}
+
+void update_hidden_section_headers(std::vector<Elf64_Shdr> &hidden_section_headers,
+        std::unordered_map<int, unsigned long> &hidden_section_addresses,
+        std::unordered_map<int, unsigned long> &hidden_alloc_section_absolute_offsets) {
+    for (unsigned i = 0; i < hidden_section_headers.size(); ++i) {
+        if (hidden_section_addresses.find(i) != hidden_section_addresses.end()) {
+            hidden_section_headers[i].sh_addr = hidden_section_addresses[i];
+        }
+
+        if (hidden_alloc_section_absolute_offsets.find(i) != hidden_alloc_section_absolute_offsets.end()) {
+            hidden_section_headers[i].sh_offset = hidden_alloc_section_absolute_offsets[i];
+        }
+
+        // TODO remove
+//        printf("section: %u, offset: %lx, address: %lx\n", i, hidden_section_headers[i].sh_offset, hidden_section_headers[i].sh_addr);
+    }
+}
+
+int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables,
+        int file,
+        const std::vector<Elf64_Shdr> &section_headers) {
+    for (unsigned i = 0; i < section_headers.size(); ++i) {
+        const Elf64_Shdr &header = section_headers[i];
+
+        if (header.sh_type != SHT_SYMTAB) {
+            continue;
+        }
+
+        std::vector<Elf64_Sym> symbol_table;
+        if (read_symbol_table(symbol_table, file, header)) {
+            return -1;
+        }
+
+        symbol_tables[i] = symbol_table;
+    }
+
+    return 0;
+}
+
+// TODO write new elf header down
+int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_tables,
+        Elf64_Ehdr &output_elf_header,
+        int rel_file,
+        const std::vector<Elf64_Shdr> &rel_section_headers,
+        const std::unordered_map<std::string, Elf64_Sym> &exec_symbol_map,
+        const std::unordered_map<int, unsigned long> &hidden_section_addresses
+    ) {
+    unsigned long orig_start = output_elf_header.e_entry;
+
+    for (auto &entry: rel_symbol_tables) {
+        std::vector<char> string_table;
+
+        if (read_string_table_for_symbol_table(
+                string_table, rel_file, rel_section_headers, rel_section_headers[entry.first])) {
+            return -1;
+        }
+
+        for (auto &symbol: entry.second) {
+            if (symbol.st_name >= string_table.size()) {
+                printf("String index out-of-bounds.\n");
+                return -1;
+            }
+
+            std::string name(string_table.data() + symbol.st_name);
+
+            if (symbol.st_shndx == SHN_UNDEF) {
+
+                if (name == ORIG_START_STRING) {
+                    // TODO might write down transformed sections
+                    symbol.st_shndx = SHN_ABS;
+                    symbol.st_value = orig_start;
+                } else if (exec_symbol_map.find(name) != exec_symbol_map.end()) {
+                    symbol.st_shndx = SHN_ABS;
+                    symbol.st_value = exec_symbol_map.at(name).st_value;
+                }
+
+                printf("EXT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
+            } else if (symbol.st_shndx != SHN_ABS) {
+                // TODO might handle big indices
+                unsigned section_index = symbol.st_shndx;
+
+                if (hidden_section_addresses.find(section_index) == hidden_section_addresses.end()) {
+                    continue;
+                }
+
+                symbol.st_value += hidden_section_addresses.at(section_index);
+
+                if (name == _START_STRING) {
+                    output_elf_header.e_entry = symbol.st_value;
+                }
+
+                printf("INT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
+            }
+        }
+    }
+
+    return 0;
+}
 
 int postlink(int exec, int rel, char *output_path) {
     // TODO - validation
@@ -599,6 +768,7 @@ int postlink(int exec, int rel, char *output_path) {
     std::vector<Elf64_Shdr> exec_section_headers;
     std::vector<Elf64_Shdr> rel_section_headers;
     std::vector<Elf64_Shdr> output_section_headers;
+    std::vector<Elf64_Shdr> hidden_section_headers;
 
     std::vector<Elf64_Phdr> exec_program_headers;
     std::vector<Elf64_Phdr> output_program_headers;
@@ -608,9 +778,9 @@ int postlink(int exec, int rel, char *output_path) {
 
     std::vector<int> section_partition[SEGMENT_KIND_COUNT];
 
-    std::unordered_map<int, unsigned long> new_section_addresses;
-    std::unordered_map<int, unsigned long> new_file_section_relative_offsets;
-    std::unordered_map<int, unsigned long> new_file_section_absolute_offsets;
+    std::unordered_map<int, unsigned long> hidden_section_addresses;
+    std::unordered_map<int, unsigned long> hidden_alloc_section_relative_offsets;
+    std::unordered_map<int, unsigned long> hidden_alloc_section_absolute_offsets;
 
     unsigned long lowest_free_address;
     unsigned long lowest_free_offset;
@@ -618,6 +788,9 @@ int postlink(int exec, int rel, char *output_path) {
     unsigned long exec_file_size;
     unsigned long max_alignment;
     unsigned long exec_shift_value;
+
+    std::unordered_map<std::string, Elf64_Sym> exec_symbol_map;
+    std::map<int, std::vector<Elf64_Sym>> rel_symbol_tables;
 
     if (pread_full(exec, (char *)&exec_elf_header, sizeof(exec_elf_header), 0)
         || pread_full(rel, (char *)&rel_elf_header, sizeof(rel_elf_header), 0)
@@ -631,6 +804,7 @@ int postlink(int exec, int rel, char *output_path) {
 
     output_elf_header = exec_elf_header;
     output_section_headers = std::vector<Elf64_Shdr>(exec_section_headers);
+    hidden_section_headers = std::vector<Elf64_Shdr>(rel_section_headers);
     output_program_headers = std::vector<Elf64_Phdr>(exec_program_headers);
 
     coalesce_sections(section_partition, rel_section_headers);
@@ -639,8 +813,8 @@ int postlink(int exec, int rel, char *output_path) {
 
     allocate_segments_no_offset(
             new_program_headers,
-            new_section_addresses,
-            new_file_section_relative_offsets,
+            hidden_section_addresses,
+            hidden_alloc_section_relative_offsets,
             lowest_free_address,
             section_partition,
             rel_section_headers
@@ -678,8 +852,8 @@ int postlink(int exec, int rel, char *output_path) {
     }
 
     build_absolute_section_offsets(
-            new_file_section_absolute_offsets,
-            new_file_section_relative_offsets,
+            hidden_alloc_section_absolute_offsets,
+            hidden_alloc_section_relative_offsets,
             section_partition,
             new_program_headers
     );
@@ -696,12 +870,26 @@ int postlink(int exec, int rel, char *output_path) {
             output_section_headers,
             output_program_headers,
             rel_section_headers,
-            new_file_section_absolute_offsets,
+            hidden_alloc_section_absolute_offsets,
             exec_file_size,
             exec_shift_value
-    )) {
+        )
+    || build_global_symbol_map(exec_symbol_map, output, output_section_headers)
+    || get_symbol_tables(rel_symbol_tables, rel, rel_section_headers)
+    || update_symbol_tables(
+            rel_symbol_tables,
+            output_elf_header,
+            rel,
+            rel_section_headers,
+            exec_symbol_map,
+            hidden_section_addresses
+        )
+    ) {
         goto fail_close;
     }
+
+    // TODO keep?
+//    update_hidden_section_headers(hidden_section_headers, hidden_section_addresses, hidden_alloc_section_absolute_offsets);
 
     exit_code = 0;
 
