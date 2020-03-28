@@ -623,6 +623,51 @@ int perform_shifts(Elf64_Ehdr &output_elf_header,
     return 0;
 }
 
+int update_program_header_count(Elf64_Ehdr &elf_header,
+        std::vector<Elf64_Shdr> &section_headers,
+        const std::vector<Elf64_Phdr> &program_headers
+        ) {
+    unsigned long count = program_headers.size();
+
+    if (count >= PN_XNUM) {
+        if (section_headers.empty()) {
+            printf("No first section found in exec file.\n");
+            return -1;
+        }
+
+        section_headers[0].sh_info = count;
+    } else {
+        if (!section_headers.empty()) {
+            section_headers[0].sh_info = 0;
+        }
+
+        elf_header.e_phnum = count;
+    }
+
+    return 0;
+}
+
+//// TODO check sizeofs for buffer overflow
+//int collect_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map,
+//        int file,
+//        const std::vector<Elf64_Shdr> &section_headers
+//        ) {
+//    for (auto &header: section_headers) {
+//        if (header.sh_type != SHT_SYMTAB) {
+//            continue;
+//        }
+//
+//        Elf64_Sym symbol;
+//        for (unsigned off = header.sh_offset; off < header.sh_offset + header.sh_size; off += header.sh_entsize) {
+//            if (pread_full(file, (char *)&symbol, sizeof(symbol), off)) {
+//                return -1;
+//            }
+//
+//            if ()
+//        }
+//    }
+//}
+
 int postlink(int exec, int rel, char *output_path) {
     // TODO - validation
     int exit_code = -1;
@@ -714,7 +759,10 @@ int postlink(int exec, int rel, char *output_path) {
     allocate_segment_offsets(new_program_headers, lowest_free_offset);
 
     build_output_program_headers(output_program_headers, new_program_headers);
-    // TODO update segment count
+
+    if (update_program_header_count(output_elf_header, output_section_headers, output_program_headers)) {
+        goto fail_no_close;
+    }
 
     build_absolute_section_offsets(
             new_file_section_absolute_offsets,
