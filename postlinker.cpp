@@ -9,6 +9,7 @@
 #include <map>
 #include <sys/sendfile.h>
 #include <sys/types.h>
+#include <cstring>
 
 #define WRITE_SEGMENT (1 << 0)
 #define EXEC_SEGMENT (1 << 1)
@@ -733,7 +734,7 @@ int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_table
                     symbol.st_value = exec_symbol_map.at(name).st_value;
                 }
 
-                printf("EXT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
+//                printf("EXT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
             } else if (symbol.st_shndx != SHN_ABS) {
                 // TODO might handle big indices
                 unsigned section_index = symbol.st_shndx;
@@ -748,7 +749,125 @@ int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_table
                     output_elf_header.e_entry = symbol.st_value;
                 }
 
-                printf("INT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
+//                printf("INT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
+            }
+
+//            printf("symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
+        }
+    }
+
+    return 0;
+}
+
+int read_rela_table(std::vector<Elf64_Rela> &rela_table, int file, const Elf64_Shdr &header) {
+    if (header.sh_type != SHT_RELA) {
+        printf("Trying to use non-SHT_RELA section as relocation table.");
+        return -1;
+    }
+
+    Elf64_Rela rela;
+
+    for (unsigned off = header.sh_offset; off < header.sh_offset + header.sh_size; off += header.sh_entsize) {
+        if (pread_full(file, (char *)(&rela), sizeof(rela), off)) {
+            return -1;
+        }
+        rela_table.push_back(rela);
+    }
+
+    return 0;
+}
+
+int perform_relocations(
+        int output_file,
+        int rel_file,
+        const std::map<int, std::vector<Elf64_Sym>> &symbol_tables,
+        const std::vector<Elf64_Shdr> &rel_section_headers,
+        const std::unordered_map<int, unsigned long> &alloc_section_offsets,
+        const std::unordered_map<int, unsigned long> &section_addresses
+        ) {
+    for (auto &header: rel_section_headers) {
+        if (header.sh_type != SHT_RELA) {
+            continue;
+        }
+
+        unsigned long symbol_section_index = header.sh_link;
+        unsigned long target_section_index = header.sh_info;
+
+        if (symbol_tables.find(symbol_section_index) == symbol_tables.end()) {
+            printf("Relocation section targeting non-symbol section.");
+            return -1;
+        }
+
+        if (alloc_section_offsets.find(target_section_index) == alloc_section_offsets.end()) {
+            continue;
+        }
+
+        const std::vector<Elf64_Sym> &symbol_table = symbol_tables.at(symbol_section_index);
+        const Elf64_Shdr &target_header = rel_section_headers[target_section_index];
+
+        std::vector<Elf64_Rela> rela_table;
+        if (read_rela_table(rela_table, rel_file, header)) {
+            return -1;
+        }
+
+        for (auto &rela: rela_table) {
+            unsigned long rel_offset = rela.r_offset;
+            unsigned symbol_index = ELF64_R_SYM(rela.r_info);
+            unsigned type = ELF64_R_TYPE(rela.r_info);
+
+            if (symbol_index >= symbol_table.size()) {
+                printf("Out-of-bounds symbol index.");
+                return -1;
+            }
+
+            Elf64_Sym symbol = symbol_table[symbol_index];
+
+            if (symbol.st_shndx == SHN_UNDEF) {
+                printf("Relocation for undefined symbol.");
+                return -1;
+            }
+
+            long addend = rela.r_addend;
+            unsigned long abs_offset = alloc_section_offsets.at(target_section_index) + rel_offset;
+            unsigned long address = section_addresses.at(target_section_index) + rel_offset;
+            unsigned long value = symbol.st_value;
+            long signed_value;
+            long signed_address;
+            memcpy(&signed_value, (const void *)&value, sizeof(signed_value));
+            memcpy(&signed_address, (const void *)&address, sizeof(signed_address));
+
+            switch (type) {
+                case R_X86_64_64:
+                    signed_value += addend;
+                    if (pwrite_full(output_file, (char *)&signed_value, 8, abs_offset)) {
+                        return -1;
+                    }
+                    break;
+                case R_X86_64_32:
+                    signed_value += addend;
+                    //TODO check
+                    if (pwrite_full(output_file, (char *)&signed_value, 4, abs_offset)) {
+                        return -1;
+                    }
+                    break;
+                case R_X86_64_32S:
+                    signed_value += addend;
+                    //TODO check
+                    if (pwrite_full(output_file, (char *)&signed_value, 4, abs_offset)) {
+                        return -1;
+                    }
+                    break;
+                case R_X86_64_PC32:
+                case R_X86_64_PLT32:
+                    signed_value -= signed_address;
+                    signed_value += addend;
+                    // TODO check
+                    if (pwrite_full(output_file, (char *)&signed_value, 4, abs_offset)) {
+                        return -1;
+                    }
+                    break;
+                default:
+                    continue;
             }
         }
     }
@@ -884,12 +1003,11 @@ int postlink(int exec, int rel, char *output_path) {
             exec_symbol_map,
             hidden_section_addresses
         )
+    || perform_relocations(output, rel, rel_symbol_tables, rel_section_headers, hidden_alloc_section_absolute_offsets, hidden_section_addresses)
+    || write_elf_header(output, output_elf_header)
     ) {
         goto fail_close;
     }
-
-    // TODO keep?
-//    update_hidden_section_headers(hidden_section_headers, hidden_section_addresses, hidden_alloc_section_absolute_offsets);
 
     exit_code = 0;
 
