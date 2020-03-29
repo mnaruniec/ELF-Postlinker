@@ -42,7 +42,7 @@ private:
  * Structure for keeping information about rel file sections locations in the output elf.
  */
 struct HiddenSectionsInfo {
-    std::vector<int> section_partition[SEGMENT_KIND_COUNT];
+    std::array<std::vector<int>, SEGMENT_KIND_COUNT> section_partition;
     std::unordered_map<int, unsigned long> section_addresses;
     std::unordered_map<int, unsigned long> loadable_section_relative_offsets;
     std::unordered_map<int, unsigned long> loadable_section_absolute_offsets;

@@ -47,12 +47,8 @@ static void coalesce_sections(HiddenSectionsInfo &hidden_sections_info, const El
         }
     }
 
-    for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
-        std::sort(
-                hidden_sections_info.section_partition[i].begin(),
-                hidden_sections_info.section_partition[i].end(),
-                SectionComparator(&rel_file.section_headers)
-        );
+    for (auto &sections: hidden_sections_info.section_partition) {
+        std::sort(sections.begin(), sections.end(), SectionComparator(&rel_file.section_headers));
     }
 }
 
