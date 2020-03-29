@@ -59,7 +59,6 @@ static int read_string_table_for_symbol_table(std::vector<char> &string_table,
     return read_string_table(string_table, file.fd, string_table_header);
 }
 
-// TODO check sizeofs for buffer overflow
 static int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map, const ElfFile &file) {
     for (auto &header: file.section_headers) {
         if (header.sh_type != SHT_SYMTAB) {
@@ -84,7 +83,6 @@ static int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &s
             std::string symbol_name(string_table.data() + name_offset);
             unsigned long symbol_binding = ELF64_ST_BIND(symbol.st_info);
 
-            // TODO check COMMON
             if (symbol_binding == STB_GLOBAL && symbol.st_shndx != SHN_UNDEF && symbol.st_shndx != SHN_COMMON) {
                 if (symbol_map.find(symbol_name) != symbol_map.end()) {
                     printf("Duplicate symbol name\n");
@@ -146,7 +144,6 @@ static int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbo
             if (symbol.st_shndx == SHN_UNDEF) {
 
                 if (name == ORIG_START_STRING) {
-                    // TODO might write down transformed sections
                     symbol.st_shndx = SHN_ABS;
                     symbol.st_value = orig_start;
                 } else if (exec_symbol_map.find(name) != exec_symbol_map.end()) {

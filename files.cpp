@@ -31,7 +31,6 @@ int pread_full(int file, char *buf, size_t bytes, off_t offset) {
     return 0;
 }
 
-
 int pwrite_full(int file, char *buf, size_t bytes, off_t offset) {
     int wrote = 0;
     while (bytes > 0) {
@@ -53,8 +52,6 @@ int pwrite_full(int file, char *buf, size_t bytes, off_t offset) {
     return 0;
 }
 
-
-// TODO eintr
 int copy_data(int output, int input, size_t size, off_t output_offset, off_t input_offset) {
     if (lseek(output, output_offset, SEEK_SET) < 0 || lseek(input, input_offset, SEEK_SET) < 0) {
         perror("lseek");

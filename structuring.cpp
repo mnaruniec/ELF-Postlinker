@@ -69,7 +69,6 @@ static inline unsigned long align_to(unsigned long to_be_aligned, unsigned long 
 static void initialize_new_program_header(Elf64_Phdr &header, unsigned flags) {
     header.p_type = PT_LOAD;
     header.p_offset = header.p_vaddr = header.p_paddr = header.p_filesz = header.p_memsz = 0;
-    // TODO check flags
     header.p_align = PAGE_SIZE;
 
     header.p_flags = PF_R;
@@ -94,7 +93,7 @@ static void allocate_segments_no_offset(
             continue;
         }
 
-        next_free_address = align_to(next_free_address, MAX_PAGE_SIZE);
+        next_free_address = align_to(next_free_address, PAGE_SIZE);
         Elf64_Phdr new_program_header;
         initialize_new_program_header(new_program_header, i);
 
@@ -320,7 +319,6 @@ int run_structuring_phase(ElfFile &output,
         return -1;
     }
 
-    // TODO consider making a method
     build_absolute_section_offsets(hidden_sections_info, new_program_headers);
 
     return 0;

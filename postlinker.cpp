@@ -22,7 +22,6 @@ int read_headers(ElfFile &exec, ElfFile &rel) {
 
 int postlink(int exec_fd, int rel_fd, char *output_path) {
     // TODO - validation
-    // TODO handling no section exec?
     int exit_code = -1;
 
     ElfFile exec;
