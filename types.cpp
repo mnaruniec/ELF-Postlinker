@@ -65,3 +65,12 @@ unsigned long ElfFile::get_lowest_free_address() const {
 
     return result;
 }
+
+unsigned long ElfFile::get_max_segment_alignment() const {
+    unsigned long result = MAX_PAGE_SIZE;
+    for (auto &header: program_headers) {
+        result = std::max(result, header.p_align);
+    }
+
+    return result;
+}

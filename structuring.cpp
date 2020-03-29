@@ -113,7 +113,7 @@ private:
     const std::vector<Elf64_Shdr> *section_headers;
 };
 
-void coalesce_sections(HiddenSectionsInfo &hidden_sections_info, const ElfFile &rel_file) {
+static void coalesce_sections(HiddenSectionsInfo &hidden_sections_info, const ElfFile &rel_file) {
     unsigned char flags;
     for (unsigned i = 0; i < rel_file.section_headers.size(); ++i) {
         const Elf64_Shdr &header = rel_file.section_headers[i];
@@ -141,16 +141,7 @@ void coalesce_sections(HiddenSectionsInfo &hidden_sections_info, const ElfFile &
     }
 }
 
-unsigned long get_max_segment_alignment(const ElfFile &file) {
-    unsigned long result = MAX_PAGE_SIZE;
-    for (auto &header: file.program_headers) {
-        result = std::max(result, header.p_align);
-    }
-
-    return result;
-}
-
-/*inline*/ unsigned long align_to(unsigned long to_be_aligned, unsigned long alignment) {
+static inline unsigned long align_to(unsigned long to_be_aligned, unsigned long alignment) {
     if (!alignment) {
         return to_be_aligned;
     }
@@ -164,16 +155,7 @@ unsigned long get_max_segment_alignment(const ElfFile &file) {
     return to_be_aligned;
 }
 
-void DEBUG_print_section_partition(const std::vector<int> section_partition[]) {
-    for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
-        printf("Segment %u:\n", i);
-        for (auto section: section_partition[i]) {
-            printf("%d\n", section);
-        }
-    }
-}
-
-void initialize_new_program_header(Elf64_Phdr &header, unsigned flags) {
+static void initialize_new_program_header(Elf64_Phdr &header, unsigned flags) {
     header.p_type = PT_LOAD;
     header.p_offset = header.p_vaddr = header.p_paddr = header.p_filesz = header.p_memsz = 0;
     // TODO check flags
@@ -188,12 +170,14 @@ void initialize_new_program_header(Elf64_Phdr &header, unsigned flags) {
     }
 }
 
-void allocate_segments_no_offset(
+static void allocate_segments_no_offset(
         std::map<int, Elf64_Phdr> &new_program_headers,
         HiddenSectionsInfo &hidden_sections_info,
-        const ElfFile &rel_file,
-        unsigned long next_free_address
+        const ElfFile &exec,
+        const ElfFile &rel
 ) {
+    unsigned long next_free_address = exec.get_lowest_free_address();
+
     for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
         if (hidden_sections_info.section_partition[i].empty()) {
             continue;
@@ -205,7 +189,7 @@ void allocate_segments_no_offset(
 
         for (unsigned j = 0; j < hidden_sections_info.section_partition[i].size(); ++j) {
             int section_index = hidden_sections_info.section_partition[i][j];
-            const Elf64_Shdr &section_header = rel_file.section_headers[section_index];
+            const Elf64_Shdr &section_header = rel.section_headers[section_index];
 
             unsigned long section_address = align_to(next_free_address, section_header.sh_addralign);
             unsigned long padding = section_address - next_free_address;
@@ -239,7 +223,7 @@ void allocate_segments_no_offset(
 
 
 // TODO possibly handle all overflows
-/*inline*/ unsigned long align_same_as(unsigned long to_be_aligned, const unsigned long objective, unsigned long alignment) {
+static inline unsigned long align_same_as(unsigned long to_be_aligned, const unsigned long objective, unsigned long alignment) {
     if (!alignment) {
         return to_be_aligned;
     }
@@ -253,7 +237,7 @@ void allocate_segments_no_offset(
     return align_to(to_be_aligned, alignment) + objective_mod;
 }
 
-void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset) {
+static void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset) {
     for (auto &header_entry: program_headers) {
         next_free_offset = align_same_as(next_free_offset, header_entry.second.p_vaddr, header_entry.second.p_align);
 
@@ -264,7 +248,7 @@ void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsign
 }
 
 
-void build_absolute_section_offsets(
+static void build_absolute_section_offsets(
         HiddenSectionsInfo &hidden_sections_info,
         const std::map<int, Elf64_Phdr> &new_program_headers
 ) {
@@ -282,7 +266,7 @@ void build_absolute_section_offsets(
     }
 }
 
-int copy_rel_sections(const ElfFile &output, const ElfFile &rel, const HiddenSectionsInfo &hidden_sections_info) {
+static int copy_rel_sections(const ElfFile &output, const ElfFile &rel, const HiddenSectionsInfo &hidden_sections_info) {
     for (auto &entry: hidden_sections_info.loadable_section_absolute_offsets) {
         const Elf64_Shdr &header = rel.section_headers[entry.first];
         if (header.sh_type == SHT_NOBITS) {
@@ -297,30 +281,11 @@ int copy_rel_sections(const ElfFile &output, const ElfFile &rel, const HiddenSec
     return 0;
 }
 
-int write_output_no_relocations(const ElfFile &output,
-                                const ElfFile &exec,
-                                const ElfFile &rel,
-                                const HiddenSectionsInfo &hidden_sections_info,
-                                unsigned long exec_file_size,
-                                unsigned long exec_shift_value
-) {
-
-    if (copy_data(output.fd, exec.fd, exec_file_size, exec_shift_value)
-        || output.write_elf_header()
-        || output.write_section_headers()
-        || output.write_program_headers()
-        || copy_rel_sections(output, rel, hidden_sections_info)) {
-        return -1;
-    }
-
-    return 0;
-}
-
-/*inline*/ unsigned long get_program_headers_size(const Elf64_Ehdr &elf_header, unsigned long program_header_count) {
+static inline unsigned long get_program_headers_size(const Elf64_Ehdr &elf_header, unsigned long program_header_count) {
     return elf_header.e_phentsize * program_header_count;
 }
 
-int get_first_load_segment(Elf64_Phdr &load, const std::vector<Elf64_Phdr> &program_headers) {
+static int get_first_load_segment(Elf64_Phdr &load, const std::vector<Elf64_Phdr> &program_headers) {
     for (auto &header: program_headers) {
         if (header.p_type == PT_LOAD) {
             load = header;
@@ -337,16 +302,16 @@ int get_first_load_segment(Elf64_Phdr &load, const std::vector<Elf64_Phdr> &prog
     return -1;
 }
 
-int perform_shifts(ElfFile &output,
+static int perform_shifts(ElfFile &output,
                    unsigned long output_program_headers_count,
-                   unsigned long exec_shift_value
+                   unsigned long exec_to_output_shift
 ) {
     output.elf_header.e_phoff = output.elf_header.e_ehsize;
-    output.elf_header.e_shoff += exec_shift_value;
+    output.elf_header.e_shoff += exec_to_output_shift;
 
     for (auto &header: output.section_headers) {
         if (header.sh_type != SHT_NULL) {
-            header.sh_offset += exec_shift_value;
+            header.sh_offset += exec_to_output_shift;
         }
     }
 
@@ -355,9 +320,9 @@ int perform_shifts(ElfFile &output,
         return -1;
     }
 
-    first_load_segment.p_filesz += exec_shift_value;
-    first_load_segment.p_memsz += exec_shift_value;
-    first_load_segment.p_paddr = first_load_segment.p_vaddr -= exec_shift_value;
+    first_load_segment.p_filesz += exec_to_output_shift;
+    first_load_segment.p_memsz += exec_to_output_shift;
+    first_load_segment.p_paddr = first_load_segment.p_vaddr -= exec_to_output_shift;
 
     bool is_first_load = true;
 
@@ -371,7 +336,7 @@ int perform_shifts(ElfFile &output,
             is_first_load = false;
             header = first_load_segment;
         } else if (header.p_vaddr != 0){
-            header.p_offset += exec_shift_value;
+            header.p_offset += exec_to_output_shift;
         }
     }
 
@@ -399,10 +364,68 @@ static int update_program_header_count(ElfFile &file) {
     return 0;
 }
 
-int update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers) {
+static int update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers) {
     for (auto &entry: new_program_headers) {
         output.program_headers.push_back(entry.second);
     }
 
     return update_program_header_count(output);
+}
+
+static unsigned long get_exec_to_output_shift(const ElfFile &exec, unsigned long output_program_headers_count) {
+    unsigned long max_segment_alignment = exec.get_max_segment_alignment();
+    unsigned long elf_and_program_headers_size =
+            exec.elf_header.e_ehsize + get_program_headers_size(exec.elf_header, output_program_headers_count);
+
+    return align_to(elf_and_program_headers_size, max_segment_alignment);
+}
+
+int run_structuring_phase(ElfFile &output,
+                          HiddenSectionsInfo &hidden_sections_info,
+                          const ElfFile &exec,
+                          const ElfFile &rel
+) {
+    std::map<int, Elf64_Phdr> new_program_headers;
+
+    coalesce_sections(hidden_sections_info, rel);
+
+    allocate_segments_no_offset(new_program_headers, hidden_sections_info, exec, rel);
+
+    unsigned long output_program_headers_count = exec.program_headers.size() + new_program_headers.size();
+    unsigned long exec_to_output_shift = get_exec_to_output_shift(exec, output_program_headers_count);
+
+    if (perform_shifts(output, output_program_headers_count, exec_to_output_shift)) {
+        return -1;
+    }
+
+    unsigned long lowest_free_offset = exec.get_lowest_free_offset() + exec_to_output_shift;
+    allocate_segment_offsets(new_program_headers, lowest_free_offset);
+
+    if (update_output_program_headers(output, new_program_headers)) {
+        return -1;
+    }
+
+    // TODO consider making a method
+    build_absolute_section_offsets(hidden_sections_info, new_program_headers);
+
+    return 0;
+}
+
+int write_structured_output(const ElfFile &output,
+                            const ElfFile &exec,
+                            const ElfFile &rel,
+                            const HiddenSectionsInfo &hidden_sections_info
+) {
+    unsigned long exec_file_size = exec.get_lowest_free_offset();
+    unsigned long exec_to_output_shift = get_exec_to_output_shift(exec, output.program_headers.size());
+
+    if (copy_data(output.fd, exec.fd, exec_file_size, exec_to_output_shift)
+        || output.write_elf_header()
+        || output.write_section_headers()
+        || output.write_program_headers()
+        || copy_rel_sections(output, rel, hidden_sections_info)) {
+        return -1;
+    }
+
+    return 0;
 }

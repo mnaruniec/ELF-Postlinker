@@ -23,6 +23,8 @@ struct ElfFile {
     unsigned long get_lowest_free_offset() const;
 
     unsigned long get_lowest_free_address() const;
+
+    unsigned long get_max_segment_alignment() const;
 };
 
 /**
