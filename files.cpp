@@ -1,8 +1,6 @@
 #include <cerrno>
-#include <cstdio>
 #include <sys/sendfile.h>
 #include <unistd.h>
-
 
 #include "files.h"
 

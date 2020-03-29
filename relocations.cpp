@@ -1,12 +1,13 @@
 #include "relocations.h"
 
 #include <cstring>
+#include <map>
 
 #include "constants.h"
 #include "files.h"
 
 
-int read_symbol_table(std::vector<Elf64_Sym> &symbol_table, int file, const Elf64_Shdr &header) {
+static int read_symbol_table(std::vector<Elf64_Sym> &symbol_table, int file, const Elf64_Shdr &header) {
     Elf64_Sym symbol;
 
     for (unsigned off = header.sh_offset; off < header.sh_offset + header.sh_size; off += header.sh_entsize) {
@@ -20,7 +21,7 @@ int read_symbol_table(std::vector<Elf64_Sym> &symbol_table, int file, const Elf6
     return 0;
 }
 
-int read_string_table(std::vector<char> &string_table, int file, const Elf64_Shdr &header) {
+static int read_string_table(std::vector<char> &string_table, int file, const Elf64_Shdr &header) {
     if (header.sh_type != SHT_STRTAB) {
         printf("Non-SHT_STRTAB section used as string table.\n");
         return -1;
@@ -39,7 +40,7 @@ int read_string_table(std::vector<char> &string_table, int file, const Elf64_Shd
     return 0;
 }
 
-int read_string_table_for_symbol_table(std::vector<char> &string_table,
+static int read_string_table_for_symbol_table(std::vector<char> &string_table,
         const ElfFile &file,
         const Elf64_Shdr &symbol_header
         ) {
@@ -59,7 +60,7 @@ int read_string_table_for_symbol_table(std::vector<char> &string_table,
 }
 
 // TODO check sizeofs for buffer overflow
-int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map, const ElfFile &file) {
+static int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map, const ElfFile &file) {
     for (auto &header: file.section_headers) {
         if (header.sh_type != SHT_SYMTAB) {
             continue;
@@ -95,15 +96,10 @@ int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_m
         }
     }
 
-    // TODO remove
-//    for (auto &entry: symbol_map) {
-//        printf("%s\n", entry.first.c_str());
-//    }
-
     return 0;
 }
 
-int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables, const ElfFile &file) {
+static int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables, const ElfFile &file) {
     for (unsigned i = 0; i < file.section_headers.size(); ++i) {
         const Elf64_Shdr &header = file.section_headers[i];
 
@@ -122,7 +118,7 @@ int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables, cons
     return 0;
 }
 
-int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_tables,
+static int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_tables,
                          ElfFile &output,
                          const ElfFile &rel,
                          const std::unordered_map<std::string, Elf64_Sym> &exec_symbol_map,
@@ -158,7 +154,6 @@ int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_table
                     symbol.st_value = exec_symbol_map.at(name).st_value;
                 }
 
-//                printf("EXT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
             } else if (symbol.st_shndx != SHN_ABS) {
                 // TODO might handle big indices
                 unsigned section_index = symbol.st_shndx;
@@ -172,18 +167,14 @@ int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_table
                 if (name == _START_STRING) {
                     output.elf_header.e_entry = symbol.st_value;
                 }
-
-//                printf("INT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
             }
-
-//            printf("symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
         }
     }
 
     return 0;
 }
 
-int read_rela_table(std::vector<Elf64_Rela> &rela_table, int file, const Elf64_Shdr &header) {
+static int read_rela_table(std::vector<Elf64_Rela> &rela_table, int file, const Elf64_Shdr &header) {
     if (header.sh_type != SHT_RELA) {
         printf("Trying to use non-SHT_RELA section as relocation table.");
         return -1;
@@ -201,7 +192,7 @@ int read_rela_table(std::vector<Elf64_Rela> &rela_table, int file, const Elf64_S
     return 0;
 }
 
-int perform_relocations(
+static int perform_relocations(
         const ElfFile &output,
         const ElfFile &rel,
         const std::map<int, std::vector<Elf64_Sym>> &symbol_tables,

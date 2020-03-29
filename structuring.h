@@ -1,11 +1,6 @@
 #ifndef STRUCTURING_H
 #define STRUCTURING_H
 
-#include <elf.h>
-#include <map>
-#include <unordered_map>
-#include <vector>
-
 #include "types.h"
 
 

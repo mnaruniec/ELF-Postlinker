@@ -1,6 +1,7 @@
 #include "structuring.h"
 
 #include <algorithm>
+#include <map>
 
 #include "constants.h"
 #include "files.h"

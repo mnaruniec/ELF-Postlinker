@@ -1,11 +1,6 @@
 #ifndef RELOCATIONS_H
 #define RELOCATIONS_H
 
-#include <elf.h>
-#include <map>
-#include <unordered_map>
-#include <vector>
-
 #include "types.h"
 
 
