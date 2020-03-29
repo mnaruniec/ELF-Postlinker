@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cstdio>
 #include <elf.h>
 #include <fcntl.h>
@@ -11,27 +10,21 @@
 #include "files.h"
 #include "relocations.h"
 #include "structuring.h"
+#include "types.h"
 
 
-int postlink(int exec, int rel, char *output_path) {
+int postlink(int exec_fd, int rel_fd, char *output_path) {
     // TODO - validation
     int exit_code = -1;
-    int output;
 
-    Elf64_Ehdr exec_elf_header;
-    Elf64_Ehdr rel_elf_header;
-    Elf64_Ehdr output_elf_header;
+    ElfFile exec;
+    ElfFile rel;
+    ElfFile output;
 
-    std::vector<Elf64_Shdr> exec_section_headers;
-    std::vector<Elf64_Shdr> rel_section_headers;
-    std::vector<Elf64_Shdr> output_section_headers;
-    std::vector<Elf64_Shdr> hidden_section_headers;
+    exec.fd = exec_fd;
+    rel.fd = rel_fd;
 
-    std::vector<Elf64_Phdr> exec_program_headers;
-    std::vector<Elf64_Phdr> output_program_headers;
     std::map<int, Elf64_Phdr> new_program_headers;
-
-    Elf64_Phdr first_load_segment;
 
     std::vector<int> section_partition[SEGMENT_KIND_COUNT];
 
@@ -49,24 +42,23 @@ int postlink(int exec, int rel, char *output_path) {
     std::unordered_map<std::string, Elf64_Sym> exec_symbol_map;
     std::map<int, std::vector<Elf64_Sym>> rel_symbol_tables;
 
-    if (pread_full(exec, (char *)&exec_elf_header, sizeof(exec_elf_header), 0)
-        || pread_full(rel, (char *)&rel_elf_header, sizeof(rel_elf_header), 0)
-        || get_section_headers(rel_section_headers, rel, rel_elf_header)
-        || get_section_headers(exec_section_headers, exec, exec_elf_header)
-        || get_program_headers(exec_program_headers, exec, exec_elf_header)
-        || get_first_load_segment(first_load_segment, exec_program_headers)
+    // TODO might change into methods
+    if (get_elf_header(exec.elf_header, exec.fd)
+        || get_elf_header(rel.elf_header, rel.fd)
+        || get_section_headers(rel.section_headers, rel.fd, rel.elf_header)
+        || get_section_headers(exec.section_headers, exec.fd, exec.elf_header)
+        || get_program_headers(exec.program_headers, exec.fd, exec.elf_header)
     ) {
         goto fail_no_close;
     }
 
-    output_elf_header = exec_elf_header;
-    output_section_headers = std::vector<Elf64_Shdr>(exec_section_headers);
-    hidden_section_headers = std::vector<Elf64_Shdr>(rel_section_headers);
-    output_program_headers = std::vector<Elf64_Phdr>(exec_program_headers);
+    output.elf_header = exec.elf_header;
+    output.section_headers = std::vector<Elf64_Shdr>(exec.section_headers);
+    output.program_headers = std::vector<Elf64_Phdr>(exec.program_headers);
 
-    coalesce_sections(section_partition, rel_section_headers);
+    coalesce_sections(section_partition, rel);
 
-    lowest_free_address = get_lowest_free_address(exec_program_headers);
+    lowest_free_address = get_lowest_free_address(exec);
 
     allocate_segments_no_offset(
             new_program_headers,
@@ -74,24 +66,22 @@ int postlink(int exec, int rel, char *output_path) {
             hidden_alloc_section_relative_offsets,
             lowest_free_address,
             section_partition,
-            rel_section_headers
+            rel
     );
 
-    output_program_headers_count = exec_program_headers.size() + new_program_headers.size();
+    output_program_headers_count = exec.program_headers.size() + new_program_headers.size();
 
-    exec_file_size = get_lowest_free_offset(exec_elf_header, exec_section_headers, exec_program_headers);
+    exec_file_size = get_lowest_free_offset(exec);
 
-    max_alignment = get_max_alignment(exec_program_headers);
+    max_alignment = get_max_segment_alignment(exec);
 
     exec_shift_value = align_to(
-            exec_elf_header.e_ehsize + get_program_headers_size(exec_elf_header, output_program_headers_count),
+            exec.elf_header.e_ehsize + get_program_headers_size(exec.elf_header, output_program_headers_count),
             max_alignment
     );
 
     if (perform_shifts(
-            output_elf_header,
-            output_section_headers,
-            output_program_headers,
+            output,
             output_program_headers_count,
             exec_shift_value
     )) {
@@ -102,9 +92,9 @@ int postlink(int exec, int rel, char *output_path) {
 
     allocate_segment_offsets(new_program_headers, lowest_free_offset);
 
-    update_output_program_headers(output_program_headers, new_program_headers);
-
-    if (update_program_header_count(output_elf_header, output_section_headers, output_program_headers)) {
+    // TODO merge these 2
+    update_output_program_headers(output, new_program_headers);
+    if (update_program_header_count(output)) {
         goto fail_no_close;
     }
 
@@ -115,34 +105,31 @@ int postlink(int exec, int rel, char *output_path) {
             new_program_headers
     );
 
-    output = open(output_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IXUSR);
-    if (output < 0) {
+    output.fd = open(output_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IXUSR);
+    if (output.fd < 0) {
         perror("open(output)");
         goto fail_no_close;
     }
 
     if (write_output_no_relocations(
             output, exec, rel,
-            output_elf_header,
-            output_section_headers,
-            output_program_headers,
-            rel_section_headers,
             hidden_alloc_section_absolute_offsets,
             exec_file_size,
             exec_shift_value
         )
-    || build_global_symbol_map(exec_symbol_map, output, output_section_headers)
-    || get_symbol_tables(rel_symbol_tables, rel, rel_section_headers)
+    || build_global_symbol_map(exec_symbol_map, output)
+    || get_symbol_tables(rel_symbol_tables, rel)
     || update_symbol_tables(
             rel_symbol_tables,
-            output_elf_header,
+            output,
             rel,
-            rel_section_headers,
             exec_symbol_map,
             hidden_section_addresses
         )
-    || perform_relocations(output, rel, rel_symbol_tables, rel_section_headers, hidden_alloc_section_absolute_offsets, hidden_section_addresses)
-    || write_elf_header(output, output_elf_header)
+        // TODO merge these 2
+    || perform_relocations(output, rel,
+            rel_symbol_tables, hidden_alloc_section_absolute_offsets, hidden_section_addresses)
+    || write_elf_header(output)
     ) {
         goto fail_close;
     }
@@ -150,7 +137,7 @@ int postlink(int exec, int rel, char *output_path) {
     exit_code = 0;
 
     fail_close:
-        if (close(output) < 0) {
+        if (close(output.fd) < 0) {
             perror("close(output)");
             exit_code = -1;
         };

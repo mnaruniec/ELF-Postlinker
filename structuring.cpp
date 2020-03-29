@@ -6,6 +6,10 @@
 #include "files.h"
 
 
+int get_elf_header(Elf64_Ehdr &elf_header, int file) {
+    return pread_full(file, (char *)&elf_header, sizeof(elf_header), 0);
+}
+
 long get_section_count(int file, const Elf64_Ehdr &elf_header) {
     long result = elf_header.e_shnum;
     if (result == SHN_UNDEF) {
@@ -109,10 +113,10 @@ private:
     const std::vector<Elf64_Shdr> *section_headers;
 };
 
-void coalesce_sections(std::vector<int> section_partition[], const std::vector<Elf64_Shdr> &section_headers) {
+void coalesce_sections(std::vector<int> section_partition[], const ElfFile &rel_file) {
     unsigned char flags;
-    for (unsigned i = 0; i < section_headers.size(); ++i) {
-        const Elf64_Shdr &header = section_headers[i];
+    for (unsigned i = 0; i < rel_file.section_headers.size(); ++i) {
+        const Elf64_Shdr &header = rel_file.section_headers[i];
         if (header.sh_flags & SHF_ALLOC) {
             flags = 0;
 
@@ -129,47 +133,49 @@ void coalesce_sections(std::vector<int> section_partition[], const std::vector<E
     }
 
     for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
-        std::sort(section_partition[i].begin(), section_partition[i].end(), SectionComparator(&section_headers));
+        std::sort(
+                section_partition[i].begin(),
+                section_partition[i].end(),
+                SectionComparator(&rel_file.section_headers)
+        );
     }
 }
 
-unsigned long get_lowest_free_offset(const Elf64_Ehdr &elf_header,
-                                     const std::vector<Elf64_Shdr> &section_headers,
-                                     const std::vector<Elf64_Phdr> &program_headers) {
+unsigned long get_lowest_free_offset(const ElfFile &file) {
+    unsigned long result = file.elf_header.e_ehsize;
 
-    unsigned long result = elf_header.e_ehsize;
-
-    unsigned long section_table_end = elf_header.e_shoff + (section_headers.size() * elf_header.e_shentsize);
+    unsigned long section_table_end =
+            file.elf_header.e_shoff + (file.section_headers.size() * file.elf_header.e_shentsize);
     result = std::max(result, section_table_end);
 
-    unsigned long segment_table_end = elf_header.e_phoff + (program_headers.size() * elf_header.e_phentsize);
+    unsigned long segment_table_end = file.elf_header.e_phoff + (file.program_headers.size() * file.elf_header.e_phentsize);
     result = std::max(result, segment_table_end);
 
-    for (auto &header: section_headers) {
+    for (auto &header: file.section_headers) {
         unsigned long size = (header.sh_type == SHT_NOBITS) ? 0 : header.sh_size;
         result = std::max(result, header.sh_offset + size);
     }
 
-    for (auto &header: program_headers) {
+    for (auto &header: file.program_headers) {
         result = std::max(result, header.p_offset + header.p_filesz);
     }
 
     return result;
 }
 
-unsigned long get_lowest_free_address(const std::vector<Elf64_Phdr> &program_headers) {
+unsigned long get_lowest_free_address(const ElfFile &file) {
     unsigned long result = 0;
 
-    for (auto &header: program_headers) {
+    for (auto &header: file.program_headers) {
         result = std::max(result, header.p_vaddr + header.p_memsz);
     }
 
     return result;
 }
 
-unsigned long get_max_alignment(const std::vector<Elf64_Phdr> &program_headers) {
+unsigned long get_max_segment_alignment(const ElfFile &file) {
     unsigned long result = MAX_PAGE_SIZE;
-    for (auto &header: program_headers) {
+    for (auto &header: file.program_headers) {
         result = std::max(result, header.p_align);
     }
 
@@ -220,7 +226,7 @@ void allocate_segments_no_offset(
         std::unordered_map<int, unsigned long> &file_section_relative_offsets,
         unsigned long next_free_address,
         const std::vector<int> section_partition[],
-        const std::vector<Elf64_Shdr> &section_headers
+        const ElfFile &rel_file
 ) {
     for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
         if (section_partition[i].empty()) {
@@ -233,7 +239,7 @@ void allocate_segments_no_offset(
 
         for (unsigned j = 0; j < section_partition[i].size(); ++j) {
             int section_index = section_partition[i][j];
-            const Elf64_Shdr &section_header = section_headers[section_index];
+            const Elf64_Shdr &section_header = rel_file.section_headers[section_index];
 
             unsigned long section_address = align_to(next_free_address, section_header.sh_addralign);
             unsigned long padding = section_address - next_free_address;
@@ -290,12 +296,9 @@ void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsign
     }
 }
 
-void update_output_program_headers(
-        std::vector<Elf64_Phdr> &output_program_headers,
-        const std::map<int, Elf64_Phdr> &new_program_headers
-) {
+void update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers) {
     for (auto &entry: new_program_headers) {
-        output_program_headers.push_back(entry.second);
+        output.program_headers.push_back(entry.second);
     }
 }
 
@@ -318,8 +321,8 @@ void build_absolute_section_offsets(
     }
 }
 
-int write_elf_header(int file, const Elf64_Ehdr &elf_header) {
-    return pwrite_full(file, (char *) &elf_header, sizeof(elf_header), 0);
+int write_elf_header(const ElfFile &file) {
+    return pwrite_full(file.fd, (char *) &file.elf_header, sizeof(file.elf_header), 0);
 }
 
 int write_section_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Shdr> &section_headers) {
@@ -366,21 +369,19 @@ int copy_sections(int output, int input,
     return 0;
 }
 
-int write_output_no_relocations(int output, int exec, int rel,
-                                const Elf64_Ehdr &output_elf_header,
-                                const std::vector<Elf64_Shdr> &output_section_headers,
-                                const std::vector<Elf64_Phdr> &output_program_headers,
-                                const std::vector<Elf64_Shdr> &rel_section_headers,
+int write_output_no_relocations(const ElfFile &output,
+                                const ElfFile &exec,
+                                const ElfFile &rel,
                                 const std::unordered_map<int, unsigned long> &output_section_absolute_offsets,
                                 unsigned long exec_file_size,
                                 unsigned long exec_shift_value
 ) {
 
-    if (copy_data(output, exec, exec_file_size, exec_shift_value)
-        || write_elf_header(output, output_elf_header)
-        || write_section_headers(output, output_elf_header, output_section_headers)
-        || write_program_headers(output, output_elf_header, output_program_headers)
-        || copy_sections(output, rel, rel_section_headers, output_section_absolute_offsets)) {
+    if (copy_data(output.fd, exec.fd, exec_file_size, exec_shift_value)
+        || write_elf_header(output)
+        || write_section_headers(output.fd, output.elf_header, output.section_headers)
+        || write_program_headers(output.fd, output.elf_header, output.program_headers)
+        || copy_sections(output.fd, rel.fd, rel.section_headers, output_section_absolute_offsets)) {
         return -1;
     }
 
@@ -408,23 +409,21 @@ int get_first_load_segment(Elf64_Phdr &load, const std::vector<Elf64_Phdr> &prog
     return -1;
 }
 
-int perform_shifts(Elf64_Ehdr &output_elf_header,
-                   std::vector<Elf64_Shdr> &output_section_headers,
-                   std::vector<Elf64_Phdr> &output_program_headers,
+int perform_shifts(ElfFile &output,
                    unsigned long output_program_headers_count,
                    unsigned long exec_shift_value
 ) {
-    output_elf_header.e_phoff = output_elf_header.e_ehsize;
-    output_elf_header.e_shoff += exec_shift_value;
+    output.elf_header.e_phoff = output.elf_header.e_ehsize;
+    output.elf_header.e_shoff += exec_shift_value;
 
-    for (auto &header: output_section_headers) {
+    for (auto &header: output.section_headers) {
         if (header.sh_type != SHT_NULL) {
             header.sh_offset += exec_shift_value;
         }
     }
 
     Elf64_Phdr first_load_segment;
-    if (get_first_load_segment(first_load_segment, output_program_headers)) {
+    if (get_first_load_segment(first_load_segment, output.program_headers)) {
         return -1;
     }
 
@@ -434,12 +433,12 @@ int perform_shifts(Elf64_Ehdr &output_elf_header,
 
     bool is_first_load = true;
 
-    for (auto &header: output_program_headers) {
+    for (auto &header: output.program_headers) {
         if (header.p_type == PT_PHDR) {
-            header.p_paddr = header.p_vaddr = first_load_segment.p_vaddr + output_elf_header.e_ehsize;
-            header.p_offset = output_elf_header.e_phoff;
+            header.p_paddr = header.p_vaddr = first_load_segment.p_vaddr + output.elf_header.e_ehsize;
+            header.p_offset = output.elf_header.e_phoff;
             header.p_memsz = header.p_filesz =
-                    get_program_headers_size(output_elf_header, output_program_headers_count);
+                    get_program_headers_size(output.elf_header, output_program_headers_count);
         } else if (header.p_type == PT_LOAD && is_first_load) {
             is_first_load = false;
             header = first_load_segment;
@@ -451,25 +450,22 @@ int perform_shifts(Elf64_Ehdr &output_elf_header,
     return 0;
 }
 
-int update_program_header_count(Elf64_Ehdr &elf_header,
-                                std::vector<Elf64_Shdr> &section_headers,
-                                const std::vector<Elf64_Phdr> &program_headers
-) {
-    unsigned long count = program_headers.size();
+int update_program_header_count(ElfFile &file) {
+    unsigned long count = file.program_headers.size();
 
     if (count >= PN_XNUM) {
-        if (section_headers.empty()) {
+        if (file.section_headers.empty()) {
             printf("No first section found in exec file.\n");
             return -1;
         }
 
-        section_headers[0].sh_info = count;
+        file.section_headers[0].sh_info = count;
     } else {
-        if (!section_headers.empty()) {
-            section_headers[0].sh_info = 0;
+        if (!file.section_headers.empty()) {
+            file.section_headers[0].sh_info = 0;
         }
 
-        elf_header.e_phnum = count;
+        file.elf_header.e_phnum = count;
     }
 
     return 0;

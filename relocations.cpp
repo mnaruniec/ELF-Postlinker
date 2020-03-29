@@ -40,30 +40,27 @@ int read_string_table(std::vector<char> &string_table, int file, const Elf64_Shd
 }
 
 int read_string_table_for_symbol_table(std::vector<char> &string_table,
-                                       int file,
-                                       const std::vector<Elf64_Shdr> &section_headers,
-                                       const Elf64_Shdr &symbol_header) {
+        const ElfFile &file,
+        const Elf64_Shdr &symbol_header
+        ) {
     if (symbol_header.sh_type != SHT_SYMTAB) {
         printf("Trying to use non-SHT_SYMTAB section as symbol table..\n");
         return -1;
     }
 
     unsigned string_table_index = symbol_header.sh_link;
-    if (string_table_index >= section_headers.size()) {
+    if (string_table_index >= file.section_headers.size()) {
         printf("String table index is out-of-bounds.\n");
         return -1;
     }
-    const Elf64_Shdr &string_table_header = section_headers[string_table_index];
+    const Elf64_Shdr &string_table_header = file.section_headers[string_table_index];
 
-    return read_string_table(string_table, file, string_table_header);
+    return read_string_table(string_table, file.fd, string_table_header);
 }
 
 // TODO check sizeofs for buffer overflow
-int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map,
-                            int file,
-                            const std::vector<Elf64_Shdr> &section_headers
-) {
-    for (auto &header: section_headers) {
+int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_map, const ElfFile &file) {
+    for (auto &header: file.section_headers) {
         if (header.sh_type != SHT_SYMTAB) {
             continue;
         }
@@ -71,8 +68,8 @@ int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_m
         std::vector<char> string_table;
         std::vector<Elf64_Sym> symbol_table;
 
-        if (read_symbol_table(symbol_table, file, header)
-            || read_string_table_for_symbol_table(string_table, file, section_headers, header)) {
+        if (read_symbol_table(symbol_table, file.fd, header)
+            || read_string_table_for_symbol_table(string_table, file, header)) {
             return -1;
         }
 
@@ -106,18 +103,16 @@ int build_global_symbol_map(std::unordered_map<std::string, Elf64_Sym> &symbol_m
     return 0;
 }
 
-int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables,
-                      int file,
-                      const std::vector<Elf64_Shdr> &section_headers) {
-    for (unsigned i = 0; i < section_headers.size(); ++i) {
-        const Elf64_Shdr &header = section_headers[i];
+int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables, const ElfFile &file) {
+    for (unsigned i = 0; i < file.section_headers.size(); ++i) {
+        const Elf64_Shdr &header = file.section_headers[i];
 
         if (header.sh_type != SHT_SYMTAB) {
             continue;
         }
 
         std::vector<Elf64_Sym> symbol_table;
-        if (read_symbol_table(symbol_table, file, header)) {
+        if (read_symbol_table(symbol_table, file.fd, header)) {
             return -1;
         }
 
@@ -129,19 +124,18 @@ int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables,
 
 // TODO write new elf header down
 int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_tables,
-                         Elf64_Ehdr &output_elf_header,
-                         int rel_file,
-                         const std::vector<Elf64_Shdr> &rel_section_headers,
+                         ElfFile &output,
+                         const ElfFile &rel,
                          const std::unordered_map<std::string, Elf64_Sym> &exec_symbol_map,
                          const std::unordered_map<int, unsigned long> &hidden_section_addresses
 ) {
-    unsigned long orig_start = output_elf_header.e_entry;
+    unsigned long orig_start = output.elf_header.e_entry;
 
     for (auto &entry: rel_symbol_tables) {
         std::vector<char> string_table;
 
         if (read_string_table_for_symbol_table(
-                string_table, rel_file, rel_section_headers, rel_section_headers[entry.first])) {
+                string_table, rel, rel.section_headers[entry.first])) {
             return -1;
         }
 
@@ -176,7 +170,7 @@ int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_table
                 symbol.st_value += hidden_section_addresses.at(section_index);
 
                 if (name == _START_STRING) {
-                    output_elf_header.e_entry = symbol.st_value;
+                    output.elf_header.e_entry = symbol.st_value;
                 }
 
 //                printf("INT symbol: %s, address: %lx\n", name.c_str(), symbol.st_value);
@@ -208,14 +202,13 @@ int read_rela_table(std::vector<Elf64_Rela> &rela_table, int file, const Elf64_S
 }
 
 int perform_relocations(
-        int output_file,
-        int rel_file,
+        const ElfFile &output,
+        const ElfFile &rel,
         const std::map<int, std::vector<Elf64_Sym>> &symbol_tables,
-        const std::vector<Elf64_Shdr> &rel_section_headers,
         const std::unordered_map<int, unsigned long> &alloc_section_offsets,
         const std::unordered_map<int, unsigned long> &section_addresses
 ) {
-    for (auto &header: rel_section_headers) {
+    for (auto &header: rel.section_headers) {
         if (header.sh_type != SHT_RELA) {
             continue;
         }
@@ -233,10 +226,9 @@ int perform_relocations(
         }
 
         const std::vector<Elf64_Sym> &symbol_table = symbol_tables.at(symbol_section_index);
-        const Elf64_Shdr &target_header = rel_section_headers[target_section_index];
 
         std::vector<Elf64_Rela> rela_table;
-        if (read_rela_table(rela_table, rel_file, header)) {
+        if (read_rela_table(rela_table, rel.fd, header)) {
             return -1;
         }
 
@@ -269,21 +261,21 @@ int perform_relocations(
             switch (type) {
                 case R_X86_64_64:
                     signed_value += addend;
-                    if (pwrite_full(output_file, (char *)&signed_value, 8, abs_offset)) {
+                    if (pwrite_full(output.fd, (char *)&signed_value, 8, abs_offset)) {
                         return -1;
                     }
                     break;
                 case R_X86_64_32:
                     signed_value += addend;
                     //TODO check
-                    if (pwrite_full(output_file, (char *)&signed_value, 4, abs_offset)) {
+                    if (pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
                         return -1;
                     }
                     break;
                 case R_X86_64_32S:
                     signed_value += addend;
                     //TODO check
-                    if (pwrite_full(output_file, (char *)&signed_value, 4, abs_offset)) {
+                    if (pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
                         return -1;
                     }
                     break;
@@ -292,7 +284,7 @@ int perform_relocations(
                     signed_value -= signed_address;
                     signed_value += addend;
                     // TODO check
-                    if (pwrite_full(output_file, (char *)&signed_value, 4, abs_offset)) {
+                    if (pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
                         return -1;
                     }
                     break;

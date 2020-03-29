@@ -6,6 +6,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "types.h"
+
+int get_elf_header(Elf64_Ehdr &elf_header, int file);
+
 long get_section_count(int file, const Elf64_Ehdr &elf_header);
 
 long get_segment_count(int file, const Elf64_Ehdr &elf_header);
@@ -14,15 +18,13 @@ int get_section_headers(std::vector<Elf64_Shdr> &result, int file, const Elf64_E
 
 int get_program_headers(std::vector<Elf64_Phdr> &result, int file, const Elf64_Ehdr &elf_header);
 
-void coalesce_sections(std::vector<int> section_partition[], const std::vector<Elf64_Shdr> &section_headers);
+void coalesce_sections(std::vector<int> section_partition[], const ElfFile &rel_file);
 
-unsigned long get_lowest_free_offset(const Elf64_Ehdr &elf_header,
-                                     const std::vector<Elf64_Shdr> &section_headers,
-                                     const std::vector<Elf64_Phdr> &program_headers);
+unsigned long get_lowest_free_offset(const ElfFile &file);
 
-unsigned long get_lowest_free_address(const std::vector<Elf64_Phdr> &program_headers);
+unsigned long get_lowest_free_address(const ElfFile &file);
 
-unsigned long get_max_alignment(const std::vector<Elf64_Phdr> &program_headers);
+unsigned long get_max_segment_alignment(const ElfFile &file);
 
 // TODO inlines
 /*inline*/ unsigned long align_to(unsigned long to_be_aligned, unsigned long alignment);
@@ -38,7 +40,7 @@ void allocate_segments_no_offset(
         std::unordered_map<int, unsigned long> &file_section_relative_offsets,
         unsigned long next_free_address,
         const std::vector<int> section_partition[],
-        const std::vector<Elf64_Shdr> &section_headers
+        const ElfFile &rel_file
 );
 
 
@@ -47,10 +49,7 @@ void allocate_segments_no_offset(
 
 void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset);
 
-void update_output_program_headers(
-        std::vector<Elf64_Phdr> &output_program_headers,
-        const std::map<int, Elf64_Phdr> &new_program_headers
-);
+void update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers);
 
 void build_absolute_section_offsets(
         std::unordered_map<int, unsigned long> &absolute_offsets,
@@ -59,7 +58,7 @@ void build_absolute_section_offsets(
         const std::map<int, Elf64_Phdr> &new_program_headers
 );
 
-int write_elf_header(int file, const Elf64_Ehdr &elf_header);
+int write_elf_header(const ElfFile &file);
 
 int write_section_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Shdr> &section_headers);
 
@@ -70,11 +69,9 @@ int copy_sections(int output, int input,
                   const std::unordered_map<int, unsigned long> &output_section_absolute_offsets
 );
 
-int write_output_no_relocations(int output, int exec, int rel,
-                                const Elf64_Ehdr &output_elf_header,
-                                const std::vector<Elf64_Shdr> &output_section_headers,
-                                const std::vector<Elf64_Phdr> &output_program_headers,
-                                const std::vector<Elf64_Shdr> &rel_section_headers,
+int write_output_no_relocations(const ElfFile &output,
+                                const ElfFile &exec,
+                                const ElfFile &rel,
                                 const std::unordered_map<int, unsigned long> &output_section_absolute_offsets,
                                 unsigned long exec_file_size,
                                 unsigned long exec_shift_value
@@ -84,18 +81,12 @@ int write_output_no_relocations(int output, int exec, int rel,
 
 int get_first_load_segment(Elf64_Phdr &load, const std::vector<Elf64_Phdr> &program_headers);
 
-int perform_shifts(Elf64_Ehdr &output_elf_header,
-                   std::vector<Elf64_Shdr> &output_section_headers,
-                   std::vector<Elf64_Phdr> &output_program_headers,
+int perform_shifts(ElfFile &output,
                    unsigned long output_program_headers_count,
                    unsigned long exec_shift_value
 );
 
-int update_program_header_count(Elf64_Ehdr &elf_header,
-                                std::vector<Elf64_Shdr> &section_headers,
-                                const std::vector<Elf64_Phdr> &program_headers
-);
-
+int update_program_header_count(ElfFile &file);
 
 
 #endif //STRUCTURING_H
