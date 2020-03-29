@@ -1,16 +1,24 @@
 #include <cstdio>
-#include <elf.h>
 #include <fcntl.h>
-#include <vector>
 #include <unistd.h>
-#include <unordered_map>
-#include <map>
 
-#include "constants.h"
 #include "relocations.h"
 #include "structuring.h"
 #include "types.h"
 
+
+int read_headers(ElfFile &exec, ElfFile &rel) {
+    if (exec.read_elf_header()
+        || rel.read_elf_header()
+        || rel.read_section_headers()
+        || exec.read_section_headers()
+        || exec.read_program_headers()
+    ) {
+        return -1;
+    }
+
+    return 0;
+}
 
 int postlink(int exec_fd, int rel_fd, char *output_path) {
     // TODO - validation
@@ -26,21 +34,9 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
 
     HiddenSectionsInfo hidden_sections_info;
 
-    // TODO might change into methods
-    if (get_elf_header(exec.elf_header, exec.fd)
-        || get_elf_header(rel.elf_header, rel.fd)
-        || get_section_headers(rel.section_headers, rel.fd, rel.elf_header)
-        || get_section_headers(exec.section_headers, exec.fd, exec.elf_header)
-        || get_program_headers(exec.program_headers, exec.fd, exec.elf_header)
+    if (read_headers(exec, rel)
+        || run_structuring_phase(output, hidden_sections_info, exec, rel)
     ) {
-        goto fail_no_close;
-    }
-
-    output.elf_header = exec.elf_header;
-    output.section_headers = std::vector<Elf64_Shdr>(exec.section_headers);
-    output.program_headers = std::vector<Elf64_Phdr>(exec.program_headers);
-
-    if (run_structuring_phase(output, hidden_sections_info, exec, rel)) {
         goto fail_no_close;
     }
 

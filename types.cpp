@@ -74,3 +74,93 @@ unsigned long ElfFile::get_max_segment_alignment() const {
 
     return result;
 }
+
+int ElfFile::read_elf_header() {
+    return pread_full(fd, (char *)&elf_header, sizeof(elf_header), 0);
+}
+
+int ElfFile::read_section_headers() {
+    section_headers.clear();
+
+    Elf64_Shdr new_header;
+    long num_headers;
+    unsigned long header_offset = elf_header.e_shoff;
+
+    if ((num_headers = get_section_count()) < 0) {
+        return -1;
+    }
+
+    for (unsigned i = 0; i < num_headers; ++i) {
+        if (pread_full(fd, (char *)&new_header, sizeof(new_header), header_offset)) {
+            return -1;
+        }
+
+        section_headers.push_back(new_header);
+
+        header_offset += elf_header.e_shentsize;
+    }
+
+    return 0;
+}
+
+int ElfFile::read_program_headers() {
+    program_headers.clear();
+
+    Elf64_Phdr new_header;
+    long num_headers;
+    unsigned long header_offset = elf_header.e_phoff;
+
+    if ((num_headers = get_segment_count()) < 0) {
+        return -1;
+    }
+
+    for (unsigned i = 0; i < num_headers; ++i) {
+        if (pread_full(fd, (char *)&new_header, sizeof(new_header), header_offset)) {
+            return -1;
+        }
+
+        program_headers.push_back(new_header);
+
+        header_offset += elf_header.e_phentsize;
+    }
+
+    return 0;
+}
+
+long ElfFile::get_section_count() const {
+    long result = elf_header.e_shnum;
+    if (result == SHN_UNDEF) {
+        if (elf_header.e_shoff == 0) {
+            return 0;
+        }
+
+        Elf64_Shdr first_header;
+
+        if (pread_full(fd, (char *)&first_header, sizeof(first_header), elf_header.e_shoff)) {
+            return -1;
+        }
+
+        result = first_header.sh_size;
+    }
+
+    return result;
+}
+
+long ElfFile::get_segment_count() const {
+    long result = elf_header.e_phnum;
+    if (result == PN_XNUM) {
+        if (elf_header.e_shoff == 0) {
+            return -1;
+        }
+
+        Elf64_Shdr first_section_header;
+
+        if (pread_full(fd, (char *)&first_section_header, sizeof(first_section_header), elf_header.e_shoff)) {
+            return -1;
+        }
+
+        result = first_section_header.sh_info;
+    }
+
+    return result;
+}

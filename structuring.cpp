@@ -6,92 +6,6 @@
 #include "files.h"
 
 
-int get_elf_header(Elf64_Ehdr &elf_header, int file) {
-    return pread_full(file, (char *)&elf_header, sizeof(elf_header), 0);
-}
-
-long get_section_count(int file, const Elf64_Ehdr &elf_header) {
-    long result = elf_header.e_shnum;
-    if (result == SHN_UNDEF) {
-        if (elf_header.e_shoff == 0) {
-            return 0;
-        }
-
-        Elf64_Shdr first_header;
-
-        if (pread_full(file, (char *)&first_header, sizeof(first_header), elf_header.e_shoff)) {
-            return -1;
-        }
-
-        result = first_header.sh_size;
-    }
-
-    return result;
-}
-
-long get_segment_count(int file, const Elf64_Ehdr &elf_header) {
-    long result = elf_header.e_phnum;
-    if (result == PN_XNUM) {
-        if (elf_header.e_shoff == 0) {
-            return -1;
-        }
-
-        Elf64_Shdr first_section_header;
-
-        if (pread_full(file, (char *)&first_section_header, sizeof(first_section_header), elf_header.e_shoff)) {
-            return -1;
-        }
-
-        result = first_section_header.sh_info;
-    }
-
-    return result;
-}
-
-int get_section_headers(std::vector<Elf64_Shdr> &result, int file, const Elf64_Ehdr &elf_header) {
-    Elf64_Shdr new_header;
-    long num_headers;
-    unsigned long header_offset = elf_header.e_shoff;
-
-    if ((num_headers = get_section_count(file, elf_header)) < 0) {
-        return -1;
-    }
-
-    for (unsigned i = 0; i < num_headers; ++i) {
-        if (pread_full(file, (char *)&new_header, sizeof(new_header), header_offset)) {
-            return -1;
-        }
-
-        result.push_back(new_header);
-
-        header_offset += elf_header.e_shentsize;
-    }
-
-    return 0;
-}
-
-int get_program_headers(std::vector<Elf64_Phdr> &result, int file, const Elf64_Ehdr &elf_header) {
-    Elf64_Phdr new_header;
-    long num_headers;
-    unsigned long header_offset = elf_header.e_phoff;
-
-    if ((num_headers = get_segment_count(file, elf_header)) < 0) {
-        return -1;
-    }
-
-    for (unsigned i = 0; i < num_headers; ++i) {
-        if (pread_full(file, (char *)&new_header, sizeof(new_header), header_offset)) {
-            return -1;
-        }
-
-        result.push_back(new_header);
-
-        header_offset += elf_header.e_phentsize;
-    }
-
-    return 0;
-}
-
 struct SectionComparator {
     explicit SectionComparator(const std::vector<Elf64_Shdr> *section_headers) : section_headers{section_headers} {}
 
@@ -386,6 +300,10 @@ int run_structuring_phase(ElfFile &output,
                           const ElfFile &rel
 ) {
     std::map<int, Elf64_Phdr> new_program_headers;
+
+    output.elf_header = exec.elf_header;
+    output.section_headers = std::vector<Elf64_Shdr>(exec.section_headers);
+    output.program_headers = std::vector<Elf64_Phdr>(exec.program_headers);
 
     coalesce_sections(hidden_sections_info, rel);
 

@@ -25,6 +25,17 @@ struct ElfFile {
     unsigned long get_lowest_free_address() const;
 
     unsigned long get_max_segment_alignment() const;
+
+    int read_elf_header();
+
+    int read_section_headers();
+
+    int read_program_headers();
+
+private:
+    long get_section_count() const;
+
+    long get_segment_count() const;
 };
 
 /**
