@@ -1,7 +1,10 @@
 CPPFLAGS := --std=c++14 -Wall -Wextra -pedantic
 
-postlinker: postlinker.cpp
-	g++ $(CPPFLAGS) -o $@ $<
+postlinker: postlinker.cpp files.o
+	g++ $(CPPFLAGS) -o $@ $^
+
+files.o: files.cpp files.h
+	g++ -c $(CPPFLAGS) -o $@ $<
 
 clean:
-	rm -f postlinker
+	rm -f postlinker files.o

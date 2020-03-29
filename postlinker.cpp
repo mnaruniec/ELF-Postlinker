@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cerrno>
 #include <cstdio>
 #include <elf.h>
 #include <fcntl.h>
@@ -7,9 +6,9 @@
 #include <unistd.h>
 #include <unordered_map>
 #include <map>
-#include <sys/sendfile.h>
-#include <sys/types.h>
 #include <cstring>
+
+#include "files.h"
 
 #define WRITE_SEGMENT (1 << 0)
 #define EXEC_SEGMENT (1 << 1)
@@ -21,73 +20,6 @@
 
 #define ORIG_START_STRING ("orig_start")
 #define _START_STRING ("_start")
-
-int pread_full(int file, char *buf, size_t bytes, off_t offset) {
-    int got = 0;
-    while (bytes > 0) {
-        got = pread(file, buf, bytes, offset);
-
-        if (got < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            perror("pread");
-            return -1;
-        }
-
-        if (got == 0) {
-            printf("pread: Unexpected end of file.");
-            return -1;
-        }
-
-        buf += got;
-        offset += got;
-        bytes -= got;
-    }
-
-    return 0;
-}
-
-int pwrite_full(int file, char *buf, size_t bytes, off_t offset) {
-    int wrote = 0;
-    while (bytes > 0) {
-        wrote = pwrite(file, buf, bytes, offset);
-
-        if (wrote < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            perror("pwrite");
-            return -1;
-        }
-
-        buf += wrote;
-        offset += wrote;
-        bytes -= wrote;
-    }
-
-    return 0;
-}
-
-// TODO eintr
-int copy_data(int output, int input, size_t size, off_t output_offset = 0, off_t input_offset = 0) {
-    if (lseek(output, output_offset, SEEK_SET) < 0 || lseek(input, input_offset, SEEK_SET) < 0) {
-        perror("lseek");
-        return -1;
-    }
-
-    ssize_t sent;
-    while (size != 0) {
-        sent = sendfile(output, input, nullptr, size);
-        if (sent < 0) {
-            perror("sendfile(output, input)");
-            return -1;
-        }
-        size -= sent;
-    }
-
-    return 0;
-}
 
 long get_section_count(int file, const Elf64_Ehdr &elf_header) {
     long result = elf_header.e_shnum;

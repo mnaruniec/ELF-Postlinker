@@ -3,4 +3,4 @@ project(zadanie1)
 
 set(CMAKE_CXX_STANDARD 14)
 
-add_executable(zadanie1 postlinker.cpp)
+add_executable(zadanie1 postlinker.cpp files.cpp files.h)
