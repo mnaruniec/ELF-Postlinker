@@ -20,10 +20,6 @@ int get_program_headers(std::vector<Elf64_Phdr> &result, int file, const Elf64_E
 
 void coalesce_sections(std::vector<int> section_partition[], const ElfFile &rel_file);
 
-unsigned long get_lowest_free_offset(const ElfFile &file);
-
-unsigned long get_lowest_free_address(const ElfFile &file);
-
 unsigned long get_max_segment_alignment(const ElfFile &file);
 
 // TODO inlines

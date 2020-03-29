@@ -141,38 +141,6 @@ void coalesce_sections(std::vector<int> section_partition[], const ElfFile &rel_
     }
 }
 
-unsigned long get_lowest_free_offset(const ElfFile &file) {
-    unsigned long result = file.elf_header.e_ehsize;
-
-    unsigned long section_table_end =
-            file.elf_header.e_shoff + (file.section_headers.size() * file.elf_header.e_shentsize);
-    result = std::max(result, section_table_end);
-
-    unsigned long segment_table_end = file.elf_header.e_phoff + (file.program_headers.size() * file.elf_header.e_phentsize);
-    result = std::max(result, segment_table_end);
-
-    for (auto &header: file.section_headers) {
-        unsigned long size = (header.sh_type == SHT_NOBITS) ? 0 : header.sh_size;
-        result = std::max(result, header.sh_offset + size);
-    }
-
-    for (auto &header: file.program_headers) {
-        result = std::max(result, header.p_offset + header.p_filesz);
-    }
-
-    return result;
-}
-
-unsigned long get_lowest_free_address(const ElfFile &file) {
-    unsigned long result = 0;
-
-    for (auto &header: file.program_headers) {
-        result = std::max(result, header.p_vaddr + header.p_memsz);
-    }
-
-    return result;
-}
-
 unsigned long get_max_segment_alignment(const ElfFile &file) {
     unsigned long result = MAX_PAGE_SIZE;
     for (auto &header: file.program_headers) {

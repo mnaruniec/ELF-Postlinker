@@ -57,7 +57,7 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
 
     coalesce_sections(section_partition, rel);
 
-    lowest_free_address = get_lowest_free_address(exec);
+    lowest_free_address = exec.get_lowest_free_address();
 
     allocate_segments_no_offset(
             new_program_headers,
@@ -70,7 +70,7 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
 
     output_program_headers_count = exec.program_headers.size() + new_program_headers.size();
 
-    exec_file_size = get_lowest_free_offset(exec);
+    exec_file_size = exec.get_lowest_free_offset();
 
     max_alignment = get_max_segment_alignment(exec);
 
