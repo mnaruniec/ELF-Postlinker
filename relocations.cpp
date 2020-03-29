@@ -294,5 +294,5 @@ int perform_relocations(
         }
     }
 
-    return 0;
+    return output.write_elf_header();
 }

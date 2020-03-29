@@ -7,7 +7,6 @@
 #include <map>
 
 #include "constants.h"
-#include "files.h"
 #include "relocations.h"
 #include "structuring.h"
 #include "types.h"
@@ -92,9 +91,7 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
 
     allocate_segment_offsets(new_program_headers, lowest_free_offset);
 
-    // TODO merge these 2
-    update_output_program_headers(output, new_program_headers);
-    if (update_program_header_count(output)) {
+    if (update_output_program_headers(output, new_program_headers)) {
         goto fail_no_close;
     }
 
@@ -126,10 +123,8 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
             exec_symbol_map,
             hidden_section_addresses
         )
-        // TODO merge these 2
     || perform_relocations(output, rel,
             rel_symbol_tables, hidden_alloc_section_absolute_offsets, hidden_section_addresses)
-    || write_elf_header(output)
     ) {
         goto fail_close;
     }

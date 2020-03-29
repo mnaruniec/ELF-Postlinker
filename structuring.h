@@ -49,8 +49,6 @@ void allocate_segments_no_offset(
 
 void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset);
 
-void update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers);
-
 void build_absolute_section_offsets(
         std::unordered_map<int, unsigned long> &absolute_offsets,
         const std::unordered_map<int, unsigned long> &relative_offsets,
@@ -58,16 +56,12 @@ void build_absolute_section_offsets(
         const std::map<int, Elf64_Phdr> &new_program_headers
 );
 
-int write_elf_header(const ElfFile &file);
-
-int write_section_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Shdr> &section_headers);
-
-int write_program_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Phdr> &program_headers);
-
 int copy_sections(int output, int input,
                   const std::vector<Elf64_Shdr> &input_section_headers,
                   const std::unordered_map<int, unsigned long> &output_section_absolute_offsets
 );
+
+int update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers);
 
 int write_output_no_relocations(const ElfFile &output,
                                 const ElfFile &exec,
@@ -85,8 +79,5 @@ int perform_shifts(ElfFile &output,
                    unsigned long output_program_headers_count,
                    unsigned long exec_shift_value
 );
-
-int update_program_header_count(ElfFile &file);
-
 
 #endif //STRUCTURING_H

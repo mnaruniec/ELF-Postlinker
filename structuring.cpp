@@ -296,11 +296,6 @@ void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsign
     }
 }
 
-void update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers) {
-    for (auto &entry: new_program_headers) {
-        output.program_headers.push_back(entry.second);
-    }
-}
 
 void build_absolute_section_offsets(
         std::unordered_map<int, unsigned long> &absolute_offsets,
@@ -319,36 +314,6 @@ void build_absolute_section_offsets(
             absolute_offsets[section_index] = segment_offset + relative_offsets.at(section_index);
         }
     }
-}
-
-int write_elf_header(const ElfFile &file) {
-    return pwrite_full(file.fd, (char *) &file.elf_header, sizeof(file.elf_header), 0);
-}
-
-int write_section_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Shdr> &section_headers) {
-    unsigned long offset = elf_header.e_shoff;
-    for (auto &header: section_headers) {
-        if (pwrite_full(file, (char *) &header, sizeof(header), offset)) {
-            return -1;
-        }
-
-        offset += elf_header.e_shentsize;
-    }
-
-    return 0;
-}
-
-int write_program_headers(int file, const Elf64_Ehdr &elf_header, const std::vector<Elf64_Phdr> &program_headers) {
-    unsigned long offset = elf_header.e_phoff;
-    for (auto &header: program_headers) {
-        if (pwrite_full(file, (char *) &header, sizeof(header), offset)) {
-            return -1;
-        }
-
-        offset += elf_header.e_phentsize;
-    }
-
-    return 0;
 }
 
 int copy_sections(int output, int input,
@@ -378,9 +343,9 @@ int write_output_no_relocations(const ElfFile &output,
 ) {
 
     if (copy_data(output.fd, exec.fd, exec_file_size, exec_shift_value)
-        || write_elf_header(output)
-        || write_section_headers(output.fd, output.elf_header, output.section_headers)
-        || write_program_headers(output.fd, output.elf_header, output.program_headers)
+        || output.write_elf_header()
+        || output.write_section_headers()
+        || output.write_program_headers()
         || copy_sections(output.fd, rel.fd, rel.section_headers, output_section_absolute_offsets)) {
         return -1;
     }
@@ -450,7 +415,7 @@ int perform_shifts(ElfFile &output,
     return 0;
 }
 
-int update_program_header_count(ElfFile &file) {
+static int update_program_header_count(ElfFile &file) {
     unsigned long count = file.program_headers.size();
 
     if (count >= PN_XNUM) {
@@ -469,4 +434,12 @@ int update_program_header_count(ElfFile &file) {
     }
 
     return 0;
+}
+
+int update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers) {
+    for (auto &entry: new_program_headers) {
+        output.program_headers.push_back(entry.second);
+    }
+
+    return update_program_header_count(output);
 }
