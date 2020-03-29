@@ -23,13 +23,8 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
     exec.fd = exec_fd;
     rel.fd = rel_fd;
 
+    HiddenSectionsInfo hidden_sections_info;
     std::map<int, Elf64_Phdr> new_program_headers;
-
-    std::vector<int> section_partition[SEGMENT_KIND_COUNT];
-
-    std::unordered_map<int, unsigned long> hidden_section_addresses;
-    std::unordered_map<int, unsigned long> hidden_alloc_section_relative_offsets;
-    std::unordered_map<int, unsigned long> hidden_alloc_section_absolute_offsets;
 
     unsigned long lowest_free_address;
     unsigned long lowest_free_offset;
@@ -37,9 +32,6 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
     unsigned long exec_file_size;
     unsigned long max_alignment;
     unsigned long exec_shift_value;
-
-    std::unordered_map<std::string, Elf64_Sym> exec_symbol_map;
-    std::map<int, std::vector<Elf64_Sym>> rel_symbol_tables;
 
     // TODO might change into methods
     if (get_elf_header(exec.elf_header, exec.fd)
@@ -55,17 +47,15 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
     output.section_headers = std::vector<Elf64_Shdr>(exec.section_headers);
     output.program_headers = std::vector<Elf64_Phdr>(exec.program_headers);
 
-    coalesce_sections(section_partition, rel);
+    coalesce_sections(hidden_sections_info, rel);
 
     lowest_free_address = exec.get_lowest_free_address();
 
     allocate_segments_no_offset(
             new_program_headers,
-            hidden_section_addresses,
-            hidden_alloc_section_relative_offsets,
-            lowest_free_address,
-            section_partition,
-            rel
+            hidden_sections_info,
+            rel,
+            lowest_free_address
     );
 
     output_program_headers_count = exec.program_headers.size() + new_program_headers.size();
@@ -79,11 +69,7 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
             max_alignment
     );
 
-    if (perform_shifts(
-            output,
-            output_program_headers_count,
-            exec_shift_value
-    )) {
+    if (perform_shifts(output, output_program_headers_count, exec_shift_value)) {
         return -1;
     }
 
@@ -95,12 +81,8 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
         goto fail_no_close;
     }
 
-    build_absolute_section_offsets(
-            hidden_alloc_section_absolute_offsets,
-            hidden_alloc_section_relative_offsets,
-            section_partition,
-            new_program_headers
-    );
+    // TODO consider making a method
+    build_absolute_section_offsets(hidden_sections_info, new_program_headers);
 
     output.fd = open(output_path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IXUSR);
     if (output.fd < 0) {
@@ -108,23 +90,8 @@ int postlink(int exec_fd, int rel_fd, char *output_path) {
         goto fail_no_close;
     }
 
-    if (write_output_no_relocations(
-            output, exec, rel,
-            hidden_alloc_section_absolute_offsets,
-            exec_file_size,
-            exec_shift_value
-        )
-    || build_global_symbol_map(exec_symbol_map, output)
-    || get_symbol_tables(rel_symbol_tables, rel)
-    || update_symbol_tables(
-            rel_symbol_tables,
-            output,
-            rel,
-            exec_symbol_map,
-            hidden_section_addresses
-        )
-    || perform_relocations(output, rel,
-            rel_symbol_tables, hidden_alloc_section_absolute_offsets, hidden_section_addresses)
+    if (write_output_no_relocations(output, exec, rel, hidden_sections_info, exec_file_size, exec_shift_value)
+        || run_relocation_phase(output, rel, hidden_sections_info)
     ) {
         goto fail_close;
     }

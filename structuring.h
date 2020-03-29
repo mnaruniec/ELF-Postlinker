@@ -18,7 +18,7 @@ int get_section_headers(std::vector<Elf64_Shdr> &result, int file, const Elf64_E
 
 int get_program_headers(std::vector<Elf64_Phdr> &result, int file, const Elf64_Ehdr &elf_header);
 
-void coalesce_sections(std::vector<int> section_partition[], const ElfFile &rel_file);
+void coalesce_sections(HiddenSectionsInfo &hidden_sections_info, const ElfFile &rel_file);
 
 unsigned long get_max_segment_alignment(const ElfFile &file);
 
@@ -32,11 +32,9 @@ void initialize_new_program_header(Elf64_Phdr &header, unsigned flags);
 
 void allocate_segments_no_offset(
         std::map<int, Elf64_Phdr> &new_program_headers,
-        std::unordered_map<int, unsigned long> &section_addresses,
-        std::unordered_map<int, unsigned long> &file_section_relative_offsets,
-        unsigned long next_free_address,
-        const std::vector<int> section_partition[],
-        const ElfFile &rel_file
+        HiddenSectionsInfo &hidden_sections_info,
+        const ElfFile &rel_file,
+        unsigned long next_free_address
 );
 
 
@@ -46,15 +44,8 @@ void allocate_segments_no_offset(
 void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsigned long next_free_offset);
 
 void build_absolute_section_offsets(
-        std::unordered_map<int, unsigned long> &absolute_offsets,
-        const std::unordered_map<int, unsigned long> &relative_offsets,
-        const std::vector<int> section_partition[],
+        HiddenSectionsInfo &hidden_sections_info,
         const std::map<int, Elf64_Phdr> &new_program_headers
-);
-
-int copy_sections(int output, int input,
-                  const std::vector<Elf64_Shdr> &input_section_headers,
-                  const std::unordered_map<int, unsigned long> &output_section_absolute_offsets
 );
 
 int update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phdr> &new_program_headers);
@@ -62,7 +53,7 @@ int update_output_program_headers(ElfFile &output, const std::map<int, Elf64_Phd
 int write_output_no_relocations(const ElfFile &output,
                                 const ElfFile &exec,
                                 const ElfFile &rel,
-                                const std::unordered_map<int, unsigned long> &output_section_absolute_offsets,
+                                const HiddenSectionsInfo &hidden_sections_info,
                                 unsigned long exec_file_size,
                                 unsigned long exec_shift_value
 );

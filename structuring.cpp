@@ -113,7 +113,7 @@ private:
     const std::vector<Elf64_Shdr> *section_headers;
 };
 
-void coalesce_sections(std::vector<int> section_partition[], const ElfFile &rel_file) {
+void coalesce_sections(HiddenSectionsInfo &hidden_sections_info, const ElfFile &rel_file) {
     unsigned char flags;
     for (unsigned i = 0; i < rel_file.section_headers.size(); ++i) {
         const Elf64_Shdr &header = rel_file.section_headers[i];
@@ -128,14 +128,14 @@ void coalesce_sections(std::vector<int> section_partition[], const ElfFile &rel_
                 flags |= EXEC_SEGMENT;
             }
 
-            section_partition[flags].push_back(i);
+            hidden_sections_info.section_partition[flags].push_back(i);
         }
     }
 
     for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
         std::sort(
-                section_partition[i].begin(),
-                section_partition[i].end(),
+                hidden_sections_info.section_partition[i].begin(),
+                hidden_sections_info.section_partition[i].end(),
                 SectionComparator(&rel_file.section_headers)
         );
     }
@@ -190,14 +190,12 @@ void initialize_new_program_header(Elf64_Phdr &header, unsigned flags) {
 
 void allocate_segments_no_offset(
         std::map<int, Elf64_Phdr> &new_program_headers,
-        std::unordered_map<int, unsigned long> &section_addresses,
-        std::unordered_map<int, unsigned long> &file_section_relative_offsets,
-        unsigned long next_free_address,
-        const std::vector<int> section_partition[],
-        const ElfFile &rel_file
+        HiddenSectionsInfo &hidden_sections_info,
+        const ElfFile &rel_file,
+        unsigned long next_free_address
 ) {
     for (unsigned i = 0; i < SEGMENT_KIND_COUNT; ++i) {
-        if (section_partition[i].empty()) {
+        if (hidden_sections_info.section_partition[i].empty()) {
             continue;
         }
 
@@ -205,8 +203,8 @@ void allocate_segments_no_offset(
         Elf64_Phdr new_program_header;
         initialize_new_program_header(new_program_header, i);
 
-        for (unsigned j = 0; j < section_partition[i].size(); ++j) {
-            int section_index = section_partition[i][j];
+        for (unsigned j = 0; j < hidden_sections_info.section_partition[i].size(); ++j) {
+            int section_index = hidden_sections_info.section_partition[i][j];
             const Elf64_Shdr &section_header = rel_file.section_headers[section_index];
 
             unsigned long section_address = align_to(next_free_address, section_header.sh_addralign);
@@ -214,7 +212,7 @@ void allocate_segments_no_offset(
             unsigned long section_size = section_header.sh_size;
             bool is_nobits = section_header.sh_type == SHT_NOBITS;
 
-            section_addresses[section_index] = section_address;
+            hidden_sections_info.section_addresses[section_index] = section_address;
 
             if (j == 0) {
                 new_program_header.p_vaddr = new_program_header.p_paddr = section_address;
@@ -227,7 +225,8 @@ void allocate_segments_no_offset(
 
             if (!is_nobits) {
                 new_program_header.p_filesz += section_size;
-                file_section_relative_offsets[section_index] = section_address - new_program_header.p_vaddr;
+                hidden_sections_info.loadable_section_relative_offsets[section_index] =
+                        section_address - new_program_header.p_vaddr;
             }
             new_program_header.p_memsz += section_size;
 
@@ -266,35 +265,31 @@ void allocate_segment_offsets(std::map<int, Elf64_Phdr> &program_headers, unsign
 
 
 void build_absolute_section_offsets(
-        std::unordered_map<int, unsigned long> &absolute_offsets,
-        const std::unordered_map<int, unsigned long> &relative_offsets,
-        const std::vector<int> section_partition[],
+        HiddenSectionsInfo &hidden_sections_info,
         const std::map<int, Elf64_Phdr> &new_program_headers
 ) {
+    auto &absolute_offsets = hidden_sections_info.loadable_section_absolute_offsets;
+    const auto &relative_offsets = hidden_sections_info.loadable_section_relative_offsets;
+
     for (auto &entry: new_program_headers) {
         unsigned long segment_offset = entry.second.p_offset;
 
-        for (auto section_index: section_partition[entry.first]) {
-            if (relative_offsets.find(section_index) == relative_offsets.end()) {
-                continue;
+        for (auto section_index: hidden_sections_info.section_partition[entry.first]) {
+            if (relative_offsets.find(section_index) != relative_offsets.end()) {
+                absolute_offsets[section_index] = segment_offset + relative_offsets.at(section_index);
             }
-
-            absolute_offsets[section_index] = segment_offset + relative_offsets.at(section_index);
         }
     }
 }
 
-int copy_sections(int output, int input,
-                  const std::vector<Elf64_Shdr> &input_section_headers,
-                  const std::unordered_map<int, unsigned long> &output_section_absolute_offsets
-) {
-    for (auto &entry: output_section_absolute_offsets) {
-        const Elf64_Shdr &header = input_section_headers[entry.first];
+int copy_rel_sections(const ElfFile &output, const ElfFile &rel, const HiddenSectionsInfo &hidden_sections_info) {
+    for (auto &entry: hidden_sections_info.loadable_section_absolute_offsets) {
+        const Elf64_Shdr &header = rel.section_headers[entry.first];
         if (header.sh_type == SHT_NOBITS) {
             continue;
         }
 
-        if (copy_data(output, input, header.sh_size, entry.second, header.sh_offset)) {
+        if (copy_data(output.fd, rel.fd, header.sh_size, entry.second, header.sh_offset)) {
             return -1;
         }
     }
@@ -305,7 +300,7 @@ int copy_sections(int output, int input,
 int write_output_no_relocations(const ElfFile &output,
                                 const ElfFile &exec,
                                 const ElfFile &rel,
-                                const std::unordered_map<int, unsigned long> &output_section_absolute_offsets,
+                                const HiddenSectionsInfo &hidden_sections_info,
                                 unsigned long exec_file_size,
                                 unsigned long exec_shift_value
 ) {
@@ -314,7 +309,7 @@ int write_output_no_relocations(const ElfFile &output,
         || output.write_elf_header()
         || output.write_section_headers()
         || output.write_program_headers()
-        || copy_sections(output.fd, rel.fd, rel.section_headers, output_section_absolute_offsets)) {
+        || copy_rel_sections(output, rel, hidden_sections_info)) {
         return -1;
     }
 

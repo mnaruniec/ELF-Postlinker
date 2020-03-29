@@ -122,13 +122,13 @@ int get_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &symbol_tables, cons
     return 0;
 }
 
-// TODO write new elf header down
 int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbol_tables,
                          ElfFile &output,
                          const ElfFile &rel,
                          const std::unordered_map<std::string, Elf64_Sym> &exec_symbol_map,
-                         const std::unordered_map<int, unsigned long> &hidden_section_addresses
+                         const HiddenSectionsInfo &hidden_sections_info
 ) {
+    const auto &hidden_section_addresses = hidden_sections_info.section_addresses;
     unsigned long orig_start = output.elf_header.e_entry;
 
     for (auto &entry: rel_symbol_tables) {
@@ -205,9 +205,10 @@ int perform_relocations(
         const ElfFile &output,
         const ElfFile &rel,
         const std::map<int, std::vector<Elf64_Sym>> &symbol_tables,
-        const std::unordered_map<int, unsigned long> &alloc_section_offsets,
-        const std::unordered_map<int, unsigned long> &section_addresses
+        const HiddenSectionsInfo &hidden_sections_info
 ) {
+    const auto &hidden_section_offsets = hidden_sections_info.loadable_section_absolute_offsets;
+
     for (auto &header: rel.section_headers) {
         if (header.sh_type != SHT_RELA) {
             continue;
@@ -221,7 +222,7 @@ int perform_relocations(
             return -1;
         }
 
-        if (alloc_section_offsets.find(target_section_index) == alloc_section_offsets.end()) {
+        if (hidden_section_offsets.find(target_section_index) == hidden_section_offsets.end()) {
             continue;
         }
 
@@ -250,8 +251,8 @@ int perform_relocations(
             }
 
             long addend = rela.r_addend;
-            unsigned long abs_offset = alloc_section_offsets.at(target_section_index) + rel_offset;
-            unsigned long address = section_addresses.at(target_section_index) + rel_offset;
+            unsigned long abs_offset = hidden_section_offsets.at(target_section_index) + rel_offset;
+            unsigned long address = hidden_sections_info.section_addresses.at(target_section_index) + rel_offset;
             unsigned long value = symbol.st_value;
             long signed_value;
             long signed_address;
@@ -295,4 +296,19 @@ int perform_relocations(
     }
 
     return output.write_elf_header();
+}
+
+int run_relocation_phase(ElfFile &output, const ElfFile &rel, const HiddenSectionsInfo &hidden_sections_info) {
+    std::unordered_map<std::string, Elf64_Sym> exec_symbol_map;
+    std::map<int, std::vector<Elf64_Sym>> rel_symbol_tables;
+
+    if (build_global_symbol_map(exec_symbol_map, output)
+        || get_symbol_tables(rel_symbol_tables, rel)
+        || update_symbol_tables(rel_symbol_tables, output, rel, exec_symbol_map, hidden_sections_info)
+        || perform_relocations(output, rel, rel_symbol_tables, hidden_sections_info)
+    ) {
+        return -1;
+    }
+
+    return 0;
 }
