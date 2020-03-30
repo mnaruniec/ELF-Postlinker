@@ -1,6 +1,7 @@
 #include "relocations.h"
 
 #include <cstring>
+#include <limits>
 #include <map>
 
 #include "constants.h"
