@@ -28,6 +28,8 @@ struct ElfFile {
 
     int read_elf_header();
 
+    int validate_elf_header(unsigned long type) const;
+
     int read_section_headers();
 
     int read_program_headers();

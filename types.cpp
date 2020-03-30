@@ -1,5 +1,7 @@
 #include "types.h"
 
+#include <cstring>
+
 #include "files.h"
 
 
@@ -77,6 +79,17 @@ unsigned long ElfFile::get_max_segment_alignment() const {
 
 int ElfFile::read_elf_header() {
     return pread_full(fd, (char *)&elf_header, sizeof(elf_header), 0);
+}
+
+int ElfFile::validate_elf_header(unsigned long type) const {
+    if (strncmp((const char *)elf_header.e_ident, "\177ELF", 4)
+        || type != elf_header.e_type) {
+
+        printf("Invalid input ELF header.\n");
+        return -1;
+    }
+
+    return 0;
 }
 
 int ElfFile::read_section_headers() {

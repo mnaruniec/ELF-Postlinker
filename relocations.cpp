@@ -152,8 +152,12 @@ static int update_symbol_tables(std::map<int, std::vector<Elf64_Sym>> &rel_symbo
                 }
 
             } else if (symbol.st_shndx != SHN_ABS) {
-                // TODO might handle big indices
                 unsigned section_index = symbol.st_shndx;
+
+                if (section_index == SHN_XINDEX) {
+                    printf("Large section indices are not supported.\n");
+                    return -1;
+                }
 
                 if (hidden_section_addresses.find(section_index) == hidden_section_addresses.end()) {
                     continue;
@@ -187,6 +191,14 @@ static int read_rela_table(std::vector<Elf64_Rela> &rela_table, int file, const 
     }
 
     return 0;
+}
+
+static inline bool is_unsigned32(long value) {
+    return value >= std::numeric_limits<uint32_t>::min() && value <= std::numeric_limits<uint32_t>::max();
+}
+
+static inline bool is_signed32(long value) {
+    return value >= std::numeric_limits<int32_t>::min() && value <= std::numeric_limits<int32_t>::max();
 }
 
 static int perform_relocations(
@@ -256,15 +268,15 @@ static int perform_relocations(
                     break;
                 case R_X86_64_32:
                     signed_value += addend;
-                    //TODO check
-                    if (pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
+                    if (!is_unsigned32(signed_value)
+                        || pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
                         return -1;
                     }
                     break;
                 case R_X86_64_32S:
                     signed_value += addend;
-                    //TODO check
-                    if (pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
+                    if (!is_signed32(signed_value)
+                        || pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
                         return -1;
                     }
                     break;
@@ -272,8 +284,8 @@ static int perform_relocations(
                 case R_X86_64_PLT32:
                     signed_value -= signed_address;
                     signed_value += addend;
-                    // TODO check
-                    if (pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
+                    if (!is_signed32(signed_value)
+                        || pwrite_full(output.fd, (char *)&signed_value, 4, abs_offset)) {
                         return -1;
                     }
                     break;

@@ -4,7 +4,7 @@ OUTS := $(addprefix exec_, $(TESTS)) \
 CC := gcc
 CFLAGS := -O2 -fno-common
 
-all: $(OUTS)
+all: clean_patched $(OUTS)
 
 exec_%: exec_%.c
 	gcc -O2 -no-pie -fno-pie -o $@ $<
@@ -17,3 +17,7 @@ rel_static.o: rel_var.c
 
 clean:
 	rm -f $(OUTS)
+
+clean_patched:
+	rm -f patched_* tmp*
+

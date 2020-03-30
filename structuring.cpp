@@ -131,8 +131,6 @@ static void allocate_segments_no_offset(
     }
 }
 
-
-// TODO possibly handle all overflows
 static inline unsigned long align_same_as(unsigned long to_be_aligned, const unsigned long objective, unsigned long alignment) {
     if (!alignment) {
         return to_be_aligned;

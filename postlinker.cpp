@@ -9,7 +9,9 @@
 
 int read_headers(ElfFile &exec, ElfFile &rel) {
     if (exec.read_elf_header()
+        || exec.validate_elf_header(ET_EXEC)
         || rel.read_elf_header()
+        || rel.validate_elf_header(ET_REL)
         || rel.read_section_headers()
         || exec.read_section_headers()
         || exec.read_program_headers()
@@ -21,7 +23,6 @@ int read_headers(ElfFile &exec, ElfFile &rel) {
 }
 
 int postlink(int exec_fd, int rel_fd, char *output_path) {
-    // TODO - validation
     int exit_code = -1;
 
     ElfFile exec;
