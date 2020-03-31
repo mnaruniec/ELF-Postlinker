@@ -1,4 +1,4 @@
-CPPFLAGS := --std=c++14 -Wall -Wextra -pedantic
+CPPFLAGS := --std=c++14 -O2 -Wall -Wextra -pedantic
 
 postlinker: postlinker.cpp structuring.o relocations.o types.o files.o
 	g++ $(CPPFLAGS) -o $@ $^

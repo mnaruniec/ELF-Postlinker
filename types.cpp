@@ -84,7 +84,8 @@ int ElfFile::read_elf_header() {
 int ElfFile::validate_elf_header(unsigned long type) const {
     if (strncmp((const char *)elf_header.e_ident, "\177ELF", 4)
         || elf_header.e_type != type
-        || elf_header.e_machine != EM_X86_64) {
+        || elf_header.e_machine != EM_X86_64
+        || elf_header.e_ident[EI_DATA] != ELFDATA2LSB) {
 
         printf("Invalid input ELF header.\n");
         return -1;
