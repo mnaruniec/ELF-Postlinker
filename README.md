@@ -1,6 +1,5 @@
-Wystarczy skompilować program poleceniem make.
-Rozwiązanie jest napisane w C++14, bez żadnych niestandardowych bibliotek, kompilowane g++.
+CLI program for extending and modifying a compiled binary in ELF format.
+This was an Advanced Topics in Operating Systems assignment #1 in 2020 at MIMUW faculty.
 
-Program oblicza miejsce potrzebne na nowe nagłówki ELF i programów, wyrównuje do maxa z rozmiaru strony i alignmentu segmentów i kopiuje plik exec do wynikowego z otrzymanym przesunięciem.
-Na początku umieszcza nowe wersje nagłówków.
-Segmenty stworzone na bazie pliku rel są dopisane na końcu pliku.
+The program allows adding new segments to an exec ELF file from a rel ELF file and substitute the binary's entrypoint.
+It's written in C++, uses standard ELF-related headers in Linux and no external libraries.
